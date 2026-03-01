@@ -1,0 +1,4 @@
+*.cckd
+*.ckd
+*.log
+.env
