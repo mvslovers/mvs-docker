@@ -23,26 +23,27 @@ against different MVS configurations.
 
 **Status:** Planned
 
-## Quick Start
+## Usage
 
 ```bash
-# Pull image
 docker pull ghcr.io/mvslovers/mvsce-builder
 
-# Run
 docker run -d --name mvs-build \
   -p 3270:3270 -p 3505:3505 -p 3506:3506 -p 1080:1080 -p 8888:8888 \
   ghcr.io/mvslovers/mvsce-builder
 
-# Wait for MVS to IPL (~60s), then test mvsMF
+# Wait for MVS to IPL (~15s), then verify mvsMF is running
 curl -u IBMUSER:SYS1 http://localhost:1080/zosmf/info
 ```
 
 ## Build
 
 ```bash
-# Build image (runs on mvsdev.lan via SSH)
+# Build image locally
 make mvsce-builder
+
+# Or manually
+docker build -t ghcr.io/mvslovers/mvsce-builder mvsce-builder/
 
 # Build + push to ghcr.io
 make publish-mvsce-builder
