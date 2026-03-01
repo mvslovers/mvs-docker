@@ -2,3 +2,4 @@
 *.ckd
 *.log
 .env
+tmp/
