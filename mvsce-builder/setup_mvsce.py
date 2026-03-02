@@ -141,10 +141,13 @@ def main():
 
     logfile = '/tmp/hercules-build.log'
     mvsmf_xmit = '/tmp/mvsmf.xmit'
+    crent370_maclib_xmit = '/tmp/CRENT370.V0R1M0.MACLIB.XMIT'
+    crent370_ncalib_xmit = '/tmp/CRENT370.V0R1M0.NCALIB.XMIT'
 
-    if not os.path.exists(mvsmf_xmit):
-        log(f'ERROR: {mvsmf_xmit} not found')
-        sys.exit(1)
+    for f in [mvsmf_xmit, crent370_maclib_xmit, crent370_ncalib_xmit]:
+        if not os.path.exists(f):
+            log(f'ERROR: {f} not found')
+            sys.exit(1)
 
     # --- Start Hercules ---
     log('Starting Hercules...')
@@ -246,8 +249,70 @@ def main():
     log('  mvsMF load module installed')
     time.sleep(3)
 
-    # --- Step 3: Add mvsMF CGI mapping to HTTPD config ---
-    log('Step 3: Adding mvsMF CGI config...')
+    # --- Step 3: Install CRENT370 MACLIB via RECV370 ---
+    log('Step 3: Installing CRENT370.V0R1M0.MACLIB...')
+    with open(crent370_maclib_xmit, 'rb') as f:
+        maclib_data = f.read()
+    log(f'  XMIT size: {len(maclib_data)} bytes')
+
+    maclib_jcl = """//CRTMACL JOB (TSO),'RECV MACLIB',CLASS=A,MSGCLASS=H,
+//             MSGLEVEL=(1,1),USER=IBMUSER,PASSWORD=SYS1
+//*
+//RECV370  EXEC PGM=RECV370,REGION=6144K
+//STEPLIB  DD DSN=SYSC.LINKLIB,DISP=SHR
+//RECVLOG  DD SYSOUT=*
+//SYSPRINT DD SYSOUT=*
+//SYSIN    DD DUMMY
+//SYSUT1   DD UNIT=VIO,SPACE=(CYL,(50,10)),DISP=(NEW,DELETE)
+//SYSUT2   DD DSN=CRENT370.V0R1M0.MACLIB,DISP=(NEW,CATLG,DELETE),
+//            UNIT=SYSDA,VOL=SER=PUB001,
+//            SPACE=(TRK,(50,10,20)),
+//            DCB=(RECFM=FB,LRECL=80,BLKSIZE=19040,DSORG=PO)
+//XMITIN   DD DATA,DLM=$$
+"""
+    submit_ebcdic_with_binary(maclib_jcl, maclib_data)
+    log('  RECV370 job submitted, waiting...')
+    if not wait_for_job(logfile, 'CRTMACL', JOB_TIMEOUT):
+        log('ERROR: CRENT370 MACLIB RECV370 job did not complete')
+        dump_log_tail(logfile, 15)
+        herc.kill()
+        sys.exit(1)
+    log('  CRENT370.V0R1M0.MACLIB installed')
+    time.sleep(3)
+
+    # --- Step 4: Install CRENT370 NCALIB via RECV370 ---
+    log('Step 4: Installing CRENT370.V0R1M0.NCALIB...')
+    with open(crent370_ncalib_xmit, 'rb') as f:
+        ncalib_data = f.read()
+    log(f'  XMIT size: {len(ncalib_data)} bytes')
+
+    ncalib_jcl = """//CRTNCAL JOB (TSO),'RECV NCALIB',CLASS=A,MSGCLASS=H,
+//             MSGLEVEL=(1,1),USER=IBMUSER,PASSWORD=SYS1
+//*
+//RECV370  EXEC PGM=RECV370,REGION=6144K
+//STEPLIB  DD DSN=SYSC.LINKLIB,DISP=SHR
+//RECVLOG  DD SYSOUT=*
+//SYSPRINT DD SYSOUT=*
+//SYSIN    DD DUMMY
+//SYSUT1   DD UNIT=VIO,SPACE=(CYL,(50,10)),DISP=(NEW,DELETE)
+//SYSUT2   DD DSN=CRENT370.V0R1M0.NCALIB,DISP=(NEW,CATLG,DELETE),
+//            UNIT=SYSDA,VOL=SER=PUB001,
+//            SPACE=(TRK,(200,100,200)),
+//            DCB=(RECFM=U,BLKSIZE=15040,DSORG=PO)
+//XMITIN   DD DATA,DLM=$$
+"""
+    submit_ebcdic_with_binary(ncalib_jcl, ncalib_data)
+    log('  RECV370 job submitted, waiting...')
+    if not wait_for_job(logfile, 'CRTNCAL', JOB_TIMEOUT):
+        log('ERROR: CRENT370 NCALIB RECV370 job did not complete')
+        dump_log_tail(logfile, 15)
+        herc.kill()
+        sys.exit(1)
+    log('  CRENT370.V0R1M0.NCALIB installed')
+    time.sleep(3)
+
+    # --- Step 5: Add mvsMF CGI mapping to HTTPD config ---
+    log('Step 5: Adding mvsMF CGI config...')
     cgi_jcl = """//CFGMVSM JOB (TSO),'ADD MVSMF CGI',CLASS=A,MSGCLASS=H,
 //             MSGLEVEL=(1,1),REGION=0M,USER=IBMUSER,PASSWORD=SYS1
 //*
@@ -292,8 +357,8 @@ EXIT 0
     log('  mvsMF CGI config added')
     time.sleep(3)
 
-    # --- Step 4: Add HTTPD autostart to COMMND00 ---
-    log('Step 4: Adding HTTPD autostart...')
+    # --- Step 6: Add HTTPD autostart to COMMND00 ---
+    log('Step 6: Adding HTTPD autostart...')
     autostart_jcl = """//AUTOHTTP JOB (TSO),'HTTPD AUTOSTART',CLASS=A,MSGCLASS=H,
 //             MSGLEVEL=(1,1),REGION=0M,USER=IBMUSER,PASSWORD=SYS1
 //*
