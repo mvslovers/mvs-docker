@@ -95,7 +95,7 @@ with MVS via the mvsMF REST API.
 Build image for CI pipelines. Contains a fully operational MVS/CE system
 with HTTPD and mvsMF (z/OSMF-compatible REST API) pre-installed.
 
-**Image:** `ghcr.io/mvslovers/mvsce-builder` (private)
+**Image:** `ghcr.io/mvslovers/mvsce-builder` (public)
 
 Use cases:
 - Cross-compile C to S/370 assembler, then assemble + link on MVS
