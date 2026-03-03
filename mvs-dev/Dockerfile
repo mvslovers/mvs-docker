@@ -30,7 +30,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 
 # ── Docker CLI (no daemon — Docker-outside-Docker via socket) ───
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    docker.io \
+    docker-cli \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Node.js 22 LTS ──────────────────────────────────────────────
@@ -72,7 +72,8 @@ RUN groupadd --gid ${USER_GID} ${USERNAME} \
     && chmod 0440 /etc/sudoers.d/${USERNAME}
 
 # ── Add dev user to docker group for socket access ───────────────
-RUN usermod -aG docker ${USERNAME}
+RUN groupadd -g 999 docker \
+    && usermod -aG docker ${USERNAME}
 
 USER ${USERNAME}
 WORKDIR /home/${USERNAME}
