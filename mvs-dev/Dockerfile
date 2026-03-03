@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl wget jq ca-certificates gnupg \
     git vim zsh sudo locales unzip \
     fzf ripgrep fd-find \
-    libc6-i386 \
+    libc6-i386 gosu \
     && sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen \
     && locale-gen \
     && ln -sf "$(which fdfind)" /usr/local/bin/fd \
@@ -75,6 +75,11 @@ RUN groupadd --gid ${USER_GID} ${USERNAME} \
 RUN groupadd -g 999 docker \
     && usermod -aG docker ${USERNAME}
 
+# ── Entrypoint (adjusts docker group GID to match mounted socket) ─
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod 755 /usr/local/bin/entrypoint.sh
+ENTRYPOINT ["entrypoint.sh"]
+
 USER ${USERNAME}
 WORKDIR /home/${USERNAME}
 
@@ -93,5 +98,8 @@ RUN git clone --depth=1 https://github.com/LazyVim/starter ~/.config/nvim \
 # ── Default workspace ───────────────────────────────────────────
 RUN mkdir -p /home/${USERNAME}/workspace
 WORKDIR /home/${USERNAME}/workspace
+
+# ── Switch to root for entrypoint (drops to dev via gosu) ────────
+USER root
 
 CMD ["zsh"]
