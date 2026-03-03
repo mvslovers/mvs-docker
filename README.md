@@ -39,14 +39,21 @@ docker run -it -v "$(pwd)":/home/dev/workspace ghcr.io/mvslovers/mvs-dev
 
 #### Docker-outside-Docker
 
-To use the Docker CLI inside the container (e.g. to start an mvsce-builder),
-bind-mount the host Docker socket:
+To use the Docker CLI inside the container, bind-mount the host Docker socket.
+This lets you start an mvsce-builder as the MVS backend directly from within
+the devcontainer:
 
 ```bash
+# Start mvs-dev with Docker socket access
 docker run -it \
   -v "$(pwd)":/home/dev/workspace \
   -v /var/run/docker.sock:/var/run/docker.sock \
   ghcr.io/mvslovers/mvs-dev
+
+# Inside the container, start an mvsce-builder as MVS backend
+docker run -d --name mvs \
+  -p 3270:3270 -p 3505:3505 -p 3506:3506 -p 1080:1080 -p 8888:8888 \
+  ghcr.io/mvslovers/mvsce-builder
 ```
 
 #### VS Code Devcontainer / GitHub Codespaces
@@ -94,6 +101,19 @@ Use cases:
 - Cross-compile C to S/370 assembler, then assemble + link on MVS
 - Upload sources, submit JCL, poll results via REST API
 - Generate XMIT distribution files
+
+#### Usage
+
+```bash
+docker pull ghcr.io/mvslovers/mvsce-builder
+
+docker run -d --name mvs-build \
+  -p 3270:3270 -p 3505:3505 -p 3506:3506 -p 1080:1080 -p 8888:8888 \
+  ghcr.io/mvslovers/mvsce-builder
+
+# Wait for MVS to IPL (~15s), then verify mvsMF is running
+curl -u IBMUSER:SYS1 http://localhost:1080/zosmf/info
+```
 
 ### mvstk4-test / mvstk5-test / mvsce-test (planned)
 
