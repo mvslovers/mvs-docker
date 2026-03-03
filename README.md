@@ -37,24 +37,32 @@ docker pull ghcr.io/mvslovers/mvs-dev
 docker run -it -v "$(pwd)":/home/dev/workspace ghcr.io/mvslovers/mvs-dev
 ```
 
-#### Docker-outside-Docker
+#### Docker-outside-Docker with mvsce-builder
 
-To use the Docker CLI inside the container, bind-mount the host Docker socket.
-This lets you start an mvsce-builder as the MVS backend directly from within
-the devcontainer:
+To start an mvsce-builder as the MVS backend from within the devcontainer,
+bind-mount the host Docker socket and use a shared Docker network so both
+containers can communicate by name:
 
 ```bash
-# Start mvs-dev with Docker socket access
-docker run -it \
+# Create a shared network
+docker network create mvs-net
+
+# Start mvs-dev with Docker socket access on the shared network
+docker run -it --network mvs-net \
   -v "$(pwd)":/home/dev/workspace \
   -v /var/run/docker.sock:/var/run/docker.sock \
   ghcr.io/mvslovers/mvs-dev
 
-# Inside the container, start an mvsce-builder as MVS backend
-docker run -d --name mvs \
-  -p 3270:3270 -p 3505:3505 -p 3506:3506 -p 1080:1080 -p 8888:8888 \
+# Inside the container, start mvsce-builder on the same network
+docker run -d --name mvs --network mvs-net \
+  -p 3270:3270 -p 8888:8888 \
   ghcr.io/mvslovers/mvsce-builder
+
+# The mvsMF API is now reachable at http://mvs:1080 from within mvs-dev
+curl -u IBMUSER:SYS1 http://mvs:1080/zosmf/info
 ```
+
+Set `MVSMF_HOST=mvs` and `MVSMF_PORT=1080` in your project's `.env` file.
 
 #### VS Code Devcontainer / GitHub Codespaces
 
@@ -66,9 +74,13 @@ Create a `.devcontainer/devcontainer.json` in your project:
   "remoteUser": "dev",
   "mounts": [
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
-  ]
+  ],
+  "runArgs": ["--network=mvs-net"]
 }
 ```
+
+Create the network before opening the devcontainer:
+`docker network create mvs-net`
 
 Open the project in VS Code with the Dev Containers extension, or push to
 GitHub and open in Codespaces.
@@ -79,9 +91,9 @@ The container connects to an external MVS system via environment variables.
 Create a `.env` file in your project (see each project's `.env.example`):
 
 ```bash
-MVSMF_HOST=192.168.1.100   # IP of your MVS system
-MVSMF_PORT=1080             # mvsMF API port
-MVSMF_USER=IBMUSER          # MVS userid
+MVSMF_HOST=mvs              # container name on shared network, or IP/hostname
+MVSMF_PORT=1080              # mvsMF API port
+MVSMF_USER=IBMUSER           # MVS userid
 MVSMF_PASSWORD=SYS1          # MVS password
 ```
 
