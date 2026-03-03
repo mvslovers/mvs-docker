@@ -23,9 +23,34 @@ test-mvsce-builder:
 clean-mvsce-builder:
 	docker rmi $(REGISTRY)/mvsce-builder:$(TAG) || true
 
+# --- Image: mvs-dev ---
+
+.PHONY: mvs-dev publish-mvs-dev test-mvs-dev clean-mvs-dev
+
+mvs-dev:
+	docker build -t $(REGISTRY)/mvs-dev:$(TAG) mvs-dev/
+
+publish-mvs-dev: mvs-dev
+	docker push $(REGISTRY)/mvs-dev:$(TAG)
+
+test-mvs-dev:
+	docker run --rm $(REGISTRY)/mvs-dev:$(TAG) c2asm370 --version
+	docker run --rm $(REGISTRY)/mvs-dev:$(TAG) nvim --version | head -1
+	docker run --rm $(REGISTRY)/mvs-dev:$(TAG) node --version
+	docker run --rm $(REGISTRY)/mvs-dev:$(TAG) zowe --version
+	docker run --rm $(REGISTRY)/mvs-dev:$(TAG) gh --version | head -1
+	docker run --rm $(REGISTRY)/mvs-dev:$(TAG) fzf --version
+	docker run --rm $(REGISTRY)/mvs-dev:$(TAG) rg --version | head -1
+	docker run --rm $(REGISTRY)/mvs-dev:$(TAG) fd --version
+	docker run --rm $(REGISTRY)/mvs-dev:$(TAG) lazygit --version
+	docker run --rm $(REGISTRY)/mvs-dev:$(TAG) tree-sitter --version
+
+clean-mvs-dev:
+	docker rmi $(REGISTRY)/mvs-dev:$(TAG) || true
+
 # --- Convenience aliases ---
 
 .PHONY: all publish clean
-all: mvsce-builder
-publish: publish-mvsce-builder
-clean: clean-mvsce-builder
+all: mvsce-builder mvs-dev
+publish: publish-mvsce-builder publish-mvs-dev
+clean: clean-mvsce-builder clean-mvs-dev
