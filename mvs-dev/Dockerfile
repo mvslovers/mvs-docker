@@ -71,11 +71,7 @@ RUN groupadd --gid ${USER_GID} ${USERNAME} \
     && echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} \
     && chmod 0440 /etc/sudoers.d/${USERNAME}
 
-# ── Add dev user to docker group for socket access ───────────────
-RUN groupadd -g 999 docker \
-    && usermod -aG docker ${USERNAME}
-
-# ── Entrypoint (adjusts docker group GID to match mounted socket) ─
+# ── Entrypoint (creates docker group + adds dev user at runtime) ──
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 755 /usr/local/bin/entrypoint.sh
 ENTRYPOINT ["entrypoint.sh"]
