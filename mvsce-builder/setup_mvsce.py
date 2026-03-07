@@ -141,8 +141,8 @@ def main():
 
     logfile = '/tmp/hercules-build.log'
     mvsmf_xmit = '/tmp/mvsmf.xmit'
-    crent370_maclib_xmit = '/tmp/CRENT370.V0R1M0.MACLIB.XMIT'
-    crent370_ncalib_xmit = '/tmp/CRENT370.V0R1M0.NCALIB.XMIT'
+    crent370_maclib_xmit = '/tmp/crent370-1.0.0-maclib.xmit'
+    crent370_ncalib_xmit = '/tmp/crent370-1.0.0-ncalib.xmit'
 
     for f in [mvsmf_xmit, crent370_maclib_xmit, crent370_ncalib_xmit]:
         if not os.path.exists(f):
@@ -401,6 +401,59 @@ EXIT 0
         herc.kill()
         sys.exit(1)
     log('  HTTPD autostart configured')
+    time.sleep(3)
+
+    # --- Step 7: Increase HTTPD REGION to 8192K ---
+    log('Step 7: Updating HTTPD REGION to 8192K...')
+    region_jcl = """//HTTPREG JOB (TSO),'HTTPD REGION',CLASS=A,MSGCLASS=H,
+//             MSGLEVEL=(1,1),REGION=0M,USER=IBMUSER,PASSWORD=SYS1
+//*
+//UPDPROC  EXEC PGM=IKJEFT01,PARM='BREXX EXEC'
+//EXEC     DD DATA,DLM=##
+/* REXX - Update REGION in SYS2.PROCLIB(HTTPD) to 8192K */
+ADDRESS TSO
+"ALLOC F(CFGIN) DA('SYS2.PROCLIB(HTTPD)') SHR REUSE"
+"EXECIO * DISKR CFGIN (STEM LINE. FINIS"
+changed = 0
+DO i = 1 TO line.0
+  p = POS('REGION=', line.i)
+  IF p > 0 THEN DO
+    /* Find end of REGION value (next comma or space) */
+    rest = SUBSTR(line.i, p + 7)
+    e = VERIFY(rest, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
+    IF e = 0 THEN e = LENGTH(rest) + 1
+    oldval = SUBSTR(rest, 1, e - 1)
+    IF oldval \= '8192K' THEN DO
+      line.i = SUBSTR(line.i, 1, p + 6) || '8192K' || SUBSTR(rest, e)
+      changed = 1
+      SAY 'Changed REGION=' || oldval || ' to REGION=8192K'
+    END
+  END
+END
+"ALLOC F(CFGOUT) DA('SYS2.PROCLIB(HTTPD)') SHR REUSE"
+"EXECIO" line.0 "DISKW CFGOUT (STEM LINE. FINIS"
+"FREE F(CFGIN CFGOUT)"
+IF changed = 0 THEN SAY 'REGION already 8192K or not found'
+ELSE SAY 'HTTPD REGION updated successfully'
+EXIT 0
+##
+//TSOLIB   DD DSN=BREXX.V2R5M3.LINKLIB,DISP=SHR
+//RXLIB    DD DSN=BREXX.V2R5M3.RXLIB,DISP=SHR
+//SYSPRINT DD SYSOUT=*
+//SYSTSPRT DD SYSOUT=*
+//SYSTSIN  DD DUMMY
+//STDOUT   DD SYSOUT=*,DCB=(RECFM=FB,LRECL=140,BLKSIZE=5600)
+//STDERR   DD SYSOUT=*,DCB=(RECFM=FB,LRECL=140,BLKSIZE=5600)
+//STDIN    DD DUMMY
+"""
+    submit_ascii(region_jcl)
+    log('  HTTPD REGION job submitted, waiting...')
+    if not wait_for_job(logfile, 'HTTPREG', JOB_TIMEOUT):
+        log('ERROR: HTTPD REGION update job did not complete')
+        dump_log_tail(logfile, 15)
+        herc.kill()
+        sys.exit(1)
+    log('  HTTPD REGION updated to 8192K')
     time.sleep(3)
 
     # --- Shutdown MVS ---
