@@ -19,6 +19,8 @@ HERCULES_TIMEOUT = 300  # seconds to wait for MVS IPL
 JOB_TIMEOUT = 180       # seconds to wait for a single job
 MVP_TIMEOUT = 300        # seconds to wait for all MVP jobs
 
+MVP_PACKAGES = ['imon370', 'ind$file']
+
 
 def log(msg):
     elapsed = time.time() - START_TIME
@@ -44,7 +46,7 @@ def submit_ascii(jcl):
     """Submit JCL via ASCII card reader (port 3505)."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect(('127.0.0.1', ASCII_PORT))
-    sock.send(jcl.encode())
+    sock.sendall(jcl.encode())
     sock.close()
 
 
@@ -59,7 +61,7 @@ def submit_ebcdic_with_binary(jcl, binary_data, delimiter='$$'):
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect(('127.0.0.1', EBCDIC_PORT))
-    sock.send(data)
+    sock.sendall(data)
     sock.close()
 
 
@@ -135,16 +137,17 @@ def dump_log_tail(logfile, lines=10, label=''):
         print(f'    | {l}', flush=True)
 
 
+
 def main():
     global START_TIME
     START_TIME = time.time()
 
     logfile = '/tmp/hercules-build.log'
+    ufsd_xmit = '/tmp/ufsd.xmit'
+    httpd_xmit = '/tmp/httpd.xmit'
     mvsmf_xmit = '/tmp/mvsmf.xmit'
-    crent370_maclib_xmit = '/tmp/crent370-1.0.0-maclib.xmit'
-    crent370_ncalib_xmit = '/tmp/crent370-1.0.0-ncalib.xmit'
 
-    for f in [mvsmf_xmit, crent370_maclib_xmit, crent370_ncalib_xmit]:
+    for f in [ufsd_xmit, httpd_xmit, mvsmf_xmit]:
         if not os.path.exists(f):
             log(f'ERROR: {f} not found')
             sys.exit(1)
@@ -192,15 +195,12 @@ def main():
     log('JES2 ready')
     time.sleep(5)
 
-    # --- Step 1: Install HTTPD via MVP REXX on MVS ---
-    # The Python MVP script only submits an unzip job for ZIP packages,
-    # but doesn't run the actual install. We call the REXX-based MVP
-    # directly on MVS which handles the full install (like TSO `RX MVP`).
-    log('Step 1: Installing HTTPD via MVP REXX...')
-    mvp_jcl = """//MVPHTTP JOB (TSO),'MVP INSTALL',CLASS=A,MSGCLASS=H,
+    # --- Step 1: MVP update + install packages ---
+    log('Step 1: MVP update...')
+    mvp_update_jcl = """//MVPUPD  JOB (TSO),'MVP UPDATE',CLASS=A,MSGCLASS=H,
 //             MSGLEVEL=(1,1),REGION=0M,USER=IBMUSER,PASSWORD=SYS1
-//INSTALL  EXEC PGM=IKJEFT01,
-//             PARM='BREXX MVP INSTALL HTTPD'
+//UPDATE   EXEC PGM=IKJEFT01,
+//             PARM='BREXX MVP UPDATE'
 //TSOLIB   DD DSN=BREXX.V2R5M3.LINKLIB,DISP=SHR
 //RXLIB    DD DSN=BREXX.V2R5M3.RXLIB,DISP=SHR
 //SYSEXEC  DD DSN=SYS2.EXEC,DISP=SHR
@@ -211,18 +211,116 @@ def main():
 //STDERR   DD SYSOUT=*,DCB=(RECFM=FB,LRECL=140,BLKSIZE=5600)
 //STDIN    DD DUMMY
 """
-    submit_ascii(mvp_jcl)
-    log('  MVP install job submitted, waiting...')
-    if not wait_for_job(logfile, 'MVPHTTP', JOB_TIMEOUT):
-        log('ERROR: MVP HTTPD install job did not complete')
+    submit_ascii(mvp_update_jcl)
+    log('  MVP update job submitted, waiting...')
+    if not wait_for_job(logfile, 'MVPUPD', JOB_TIMEOUT):
+        log('ERROR: MVP update job did not complete')
         dump_log_tail(logfile, 15)
         herc.kill()
         sys.exit(1)
-    log('  HTTPD installed via MVP')
+    log('  MVP update complete')
     time.sleep(5)
 
-    # --- Step 2: Upload mvsMF XMIT via RECV370 ---
-    log('Step 2: Installing mvsMF load module...')
+    for pkg in MVP_PACKAGES:
+        jobname = 'MVP' + pkg[:5].upper().replace('$', '')
+        log(f'Step 1: Installing MVP package {pkg}...')
+        mvp_pkg_jcl = f"""//{jobname} JOB (TSO),'MVP {pkg.upper()[:12]}',CLASS=A,MSGCLASS=H,
+//             MSGLEVEL=(1,1),REGION=0M,USER=IBMUSER,PASSWORD=SYS1
+//INSTALL  EXEC PGM=IKJEFT01,
+//             PARM='BREXX MVP INSTALL {pkg.upper()}'
+//TSOLIB   DD DSN=BREXX.V2R5M3.LINKLIB,DISP=SHR
+//RXLIB    DD DSN=BREXX.V2R5M3.RXLIB,DISP=SHR
+//SYSEXEC  DD DSN=SYS2.EXEC,DISP=SHR
+//SYSPRINT DD SYSOUT=*
+//SYSTSPRT DD SYSOUT=*
+//SYSTSIN  DD DUMMY
+//STDOUT   DD SYSOUT=*,DCB=(RECFM=FB,LRECL=140,BLKSIZE=5600)
+//STDERR   DD SYSOUT=*,DCB=(RECFM=FB,LRECL=140,BLKSIZE=5600)
+//STDIN    DD DUMMY
+"""
+        submit_ascii(mvp_pkg_jcl)
+        log(f'  MVP install job for {pkg} submitted, waiting...')
+        if not wait_for_job(logfile, jobname, JOB_TIMEOUT):
+            log(f'ERROR: MVP install job for {pkg} did not complete')
+            dump_log_tail(logfile, 15)
+            herc.kill()
+            sys.exit(1)
+        log(f'  {pkg} installed via MVP')
+        time.sleep(5)
+
+    # --- Step 2: Install UFSD ---
+    log('Step 2a: Installing UFSD load modules...')
+    with open(ufsd_xmit, 'rb') as f:
+        xmit_data = f.read()
+    log(f'  XMIT size: {len(xmit_data)} bytes')
+
+    recv370_jcl = """//UFSDRCV JOB (TSO),'RECV UFSD',CLASS=A,MSGCLASS=H,
+//             MSGLEVEL=(1,1),USER=IBMUSER,PASSWORD=SYS1
+//*
+//RECV370  EXEC PGM=RECV370,REGION=6144K
+//STEPLIB  DD DSN=SYSC.LINKLIB,DISP=SHR
+//RECVLOG  DD SYSOUT=*
+//SYSPRINT DD SYSOUT=*
+//SYSIN    DD DUMMY
+//SYSUT1   DD DSN=&&SYSUT1,
+//            UNIT=SYSDA,VOL=SER=PUB001,
+//            SPACE=(TRK,(250,250)),
+//            DISP=(NEW,DELETE,DELETE)
+//SYSUT2   DD DSN=UFSD.LINKLIB,
+//            UNIT=SYSDA,VOL=SER=PUB001,
+//            SPACE=(TRK,(50,50,20),RLSE),
+//            DISP=(NEW,CATLG,DELETE)
+//XMITIN   DD DATA,DLM=$$
+"""
+    submit_ebcdic_with_binary(recv370_jcl, xmit_data)
+    log('  RECV370 job submitted, waiting...')
+    if not wait_for_job(logfile, 'UFSDRCV', JOB_TIMEOUT):
+        log('ERROR: UFSD RECV370 job did not complete')
+        dump_log_tail(logfile, 15)
+        herc.kill()
+        sys.exit(1)
+    log('  UFSD load modules installed')
+    time.sleep(3)
+
+    # --- Step 3: Install HTTPD 4.x load modules ---
+    log('Step 3: Installing HTTPD 4.x load modules...')
+    with open(httpd_xmit, 'rb') as f:
+        xmit_data = f.read()
+    log(f'  XMIT size: {len(xmit_data)} bytes')
+
+    recv370_jcl = """//HTTPDRCV JOB (TSO),'RECV HTTPD',CLASS=A,MSGCLASS=H,
+//             MSGLEVEL=(1,1),USER=IBMUSER,PASSWORD=SYS1
+//*
+//RECV370  EXEC PGM=RECV370,REGION=6144K
+//STEPLIB  DD DSN=SYSC.LINKLIB,DISP=SHR
+//RECVLOG  DD SYSOUT=*
+//SYSPRINT DD SYSOUT=*
+//SYSIN    DD DUMMY
+//SYSUT1   DD DSN=&&SYSUT1,
+//            UNIT=SYSDA,VOL=SER=PUB001,
+//            SPACE=(TRK,(250,250)),
+//            DISP=(NEW,DELETE,DELETE)
+//SYSUT2   DD DSN=HTTPD.LINKLIB,
+//            UNIT=SYSDA,VOL=SER=PUB001,
+//            SPACE=(TRK,(400,100,50),RLSE),
+//            DISP=(NEW,CATLG,DELETE)
+//XMITIN   DD DATA,DLM=##
+"""
+    submit_ebcdic_with_binary(recv370_jcl, xmit_data, delimiter='##')
+    log('  RECV370 job submitted, waiting...')
+    if not wait_for_job(logfile, 'HTTPDRCV', JOB_TIMEOUT):
+        log('ERROR: HTTPD RECV370 job did not complete')
+        dump_log_tail(logfile, 15)
+        herc.kill()
+        sys.exit(1)
+    log('  HTTPD 4.x load modules installed')
+    time.sleep(3)
+
+    # --- Step 4: Install mvsMF load modules into HTTPD.LINKLIB ---
+    # We receive mvsMF directly into HTTPD.LINKLIB to merge members.
+    # This avoids a separate IEBCOPY step. If RECV370 overwrites the
+    # dataset instead of merging, we need to add an IEBCOPY fallback.
+    log('Step 4: Installing mvsMF load modules into HTTPD.LINKLIB...')
     with open(mvsmf_xmit, 'rb') as f:
         xmit_data = f.read()
     log(f'  XMIT size: {len(xmit_data)} bytes')
@@ -235,8 +333,11 @@ def main():
 //RECVLOG  DD SYSOUT=*
 //SYSPRINT DD SYSOUT=*
 //SYSIN    DD DUMMY
-//SYSUT1   DD UNIT=VIO,SPACE=(CYL,(50,10)),DISP=(NEW,DELETE)
-//SYSUT2   DD DSN='HTTPD.LINKLIB',DISP=SHR
+//SYSUT1   DD DSN=&&SYSUT1,
+//            UNIT=SYSDA,VOL=SER=PUB001,
+//            SPACE=(TRK,(250,250)),
+//            DISP=(NEW,DELETE,DELETE)
+//SYSUT2   DD DSN=HTTPD.LINKLIB,DISP=SHR
 //XMITIN   DD DATA,DLM=$$
 """
     submit_ebcdic_with_binary(recv370_jcl, xmit_data)
@@ -246,96 +347,36 @@ def main():
         dump_log_tail(logfile, 15)
         herc.kill()
         sys.exit(1)
-    log('  mvsMF load module installed')
+    log('  mvsMF load modules installed into HTTPD.LINKLIB')
     time.sleep(3)
 
-    # --- Step 3: Install CRENT370 MACLIB via RECV370 ---
-    log('Step 3: Installing CRENT370.V0R1M0.MACLIB...')
-    with open(crent370_maclib_xmit, 'rb') as f:
-        maclib_data = f.read()
-    log(f'  XMIT size: {len(maclib_data)} bytes')
-
-    maclib_jcl = """//CRTMACL JOB (TSO),'RECV MACLIB',CLASS=A,MSGCLASS=H,
-//             MSGLEVEL=(1,1),USER=IBMUSER,PASSWORD=SYS1
-//*
-//RECV370  EXEC PGM=RECV370,REGION=6144K
-//STEPLIB  DD DSN=SYSC.LINKLIB,DISP=SHR
-//RECVLOG  DD SYSOUT=*
-//SYSPRINT DD SYSOUT=*
-//SYSIN    DD DUMMY
-//SYSUT1   DD UNIT=VIO,SPACE=(CYL,(50,10)),DISP=(NEW,DELETE)
-//SYSUT2   DD DSN=CRENT370.V0R1M0.MACLIB,DISP=(NEW,CATLG,DELETE),
-//            UNIT=SYSDA,VOL=SER=PUB001,
-//            SPACE=(TRK,(50,10,20)),
-//            DCB=(RECFM=FB,LRECL=80,BLKSIZE=19040,DSORG=PO)
-//XMITIN   DD DATA,DLM=$$
-"""
-    submit_ebcdic_with_binary(maclib_jcl, maclib_data)
-    log('  RECV370 job submitted, waiting...')
-    if not wait_for_job(logfile, 'CRTMACL', JOB_TIMEOUT):
-        log('ERROR: CRENT370 MACLIB RECV370 job did not complete')
-        dump_log_tail(logfile, 15)
-        herc.kill()
-        sys.exit(1)
-    log('  CRENT370.V0R1M0.MACLIB installed')
-    time.sleep(3)
-
-    # --- Step 4: Install CRENT370 NCALIB via RECV370 ---
-    log('Step 4: Installing CRENT370.V0R1M0.NCALIB...')
-    with open(crent370_ncalib_xmit, 'rb') as f:
-        ncalib_data = f.read()
-    log(f'  XMIT size: {len(ncalib_data)} bytes')
-
-    ncalib_jcl = """//CRTNCAL JOB (TSO),'RECV NCALIB',CLASS=A,MSGCLASS=H,
-//             MSGLEVEL=(1,1),USER=IBMUSER,PASSWORD=SYS1
-//*
-//RECV370  EXEC PGM=RECV370,REGION=6144K
-//STEPLIB  DD DSN=SYSC.LINKLIB,DISP=SHR
-//RECVLOG  DD SYSOUT=*
-//SYSPRINT DD SYSOUT=*
-//SYSIN    DD DUMMY
-//SYSUT1   DD UNIT=VIO,SPACE=(CYL,(50,10)),DISP=(NEW,DELETE)
-//SYSUT2   DD DSN=CRENT370.V0R1M0.NCALIB,DISP=(NEW,CATLG,DELETE),
-//            UNIT=SYSDA,VOL=SER=PUB001,
-//            SPACE=(TRK,(200,100,200)),
-//            DCB=(RECFM=U,BLKSIZE=15040,DSORG=PO)
-//XMITIN   DD DATA,DLM=$$
-"""
-    submit_ebcdic_with_binary(ncalib_jcl, ncalib_data)
-    log('  RECV370 job submitted, waiting...')
-    if not wait_for_job(logfile, 'CRTNCAL', JOB_TIMEOUT):
-        log('ERROR: CRENT370 NCALIB RECV370 job did not complete')
-        dump_log_tail(logfile, 15)
-        herc.kill()
-        sys.exit(1)
-    log('  CRENT370.V0R1M0.NCALIB installed')
-    time.sleep(3)
-
-    # --- Step 5: Add mvsMF CGI mapping to HTTPD config ---
-    log('Step 5: Adding mvsMF CGI config...')
-    cgi_jcl = """//CFGMVSM JOB (TSO),'ADD MVSMF CGI',CLASS=A,MSGCLASS=H,
+    # --- Step 5: Configure HTTPD ---
+    # 5a: Create SYS2.PROCLIB(HTTPD)
+    log('Step 5a: Creating SYS2.PROCLIB(HTTPD)...')
+    httpd_proc_jcl = """//HTTDPRC JOB (TSO),'HTTPD PROCLIB',CLASS=A,MSGCLASS=H,
 //             MSGLEVEL=(1,1),REGION=0M,USER=IBMUSER,PASSWORD=SYS1
 //*
-//ADDCGI   EXEC PGM=IKJEFT01,PARM='BREXX EXEC'
+//WRPRC    EXEC PGM=IKJEFT01,PARM='BREXX EXEC'
 //EXEC     DD DATA,DLM=##
-/* REXX - Add mvsMF CGI mapping to HTTPD config */
+/* REXX - Create SYS2.PROCLIB(HTTPD) */
 ADDRESS TSO
-"ALLOC F(CFGIN) DA('HTTPD.LUA(HTTPD)') SHR REUSE"
-"EXECIO * DISKR CFGIN (STEM LINE. FINIS"
-found = 0
-DO i = 1 TO line.0
-  IF POS('cgi.MVSMF', line.i) > 0 THEN found = 1
-END
-IF found = 0 THEN DO
-  line.0 = line.0 + 1
-  n = line.0
-  line.n = 'cgi.MVSMF="/zosmf/*"'
-END
-"ALLOC F(CFGOUT) DA('HTTPD.LUA(HTTPD)') SHR REUSE"
-"EXECIO" line.0 "DISKW CFGOUT (STEM LINE. FINIS"
-"FREE F(CFGIN CFGOUT)"
-IF found = 0 THEN SAY 'MVSMF CGI mapping added'
-ELSE SAY 'MVSMF CGI mapping already present'
+"ALLOC F(OUT) DA('SYS2.PROCLIB(HTTPD)') SHR REUSE"
+line.1  = '//HTTPD    PROC'
+line.2  = '//HTTPD    EXEC PGM=HTTPD,REGION=8192K,TIME=1440,'
+line.3  = "//         PARM='CONFIG=SYS2.PARMLIB(HTTPPRM0)'"
+line.4  = '//STEPLIB  DD DISP=SHR,DSN=HTTPD.LINKLIB'
+line.5  = '//HTTPDERR DD SYSOUT=*      STDERR'
+line.6  = '//HTTPDOUT DD SYSOUT=*      STDOUT'
+line.7  = '//HTTPDIN  DD DUMMY         STDIN'
+line.8  = '//SNAP     DD SYSOUT=*'
+line.9  = '//HTTPDBG  DD SYSOUT=*'
+line.10 = '//HTTPSTAT DD SYSOUT=*'
+line.11 = '//HASPCKPT DD DISP=SHR,DSN=SYS1.HASPCKPT,UNIT=3350,VOL=SER=MVS000'
+line.12 = '//HASPACE1 DD DISP=SHR,DSN=SYS1.HASPACE,UNIT=3350,VOL=SER=SPOOL1'
+line.0  = 12
+"EXECIO" line.0 "DISKW OUT (STEM LINE. FINIS"
+"FREE F(OUT)"
+SAY 'HTTPD STC proc created'
 EXIT 0
 ##
 //TSOLIB   DD DSN=BREXX.V2R5M3.LINKLIB,DISP=SHR
@@ -347,32 +388,292 @@ EXIT 0
 //STDERR   DD SYSOUT=*,DCB=(RECFM=FB,LRECL=140,BLKSIZE=5600)
 //STDIN    DD DUMMY
 """
-    submit_ascii(cgi_jcl)
-    log('  CGI config job submitted, waiting...')
-    if not wait_for_job(logfile, 'CFGMVSM', JOB_TIMEOUT):
-        log('ERROR: CGI config job did not complete')
+    submit_ascii(httpd_proc_jcl)
+    log('  PROCLIB job submitted, waiting...')
+    if not wait_for_job(logfile, 'HTTDPRC', JOB_TIMEOUT):
+        log('ERROR: HTTPD PROCLIB job did not complete')
         dump_log_tail(logfile, 15)
         herc.kill()
         sys.exit(1)
-    log('  mvsMF CGI config added')
+    log('  SYS2.PROCLIB(HTTPD) created')
     time.sleep(3)
 
-    # --- Step 6: Add HTTPD autostart to COMMND00 ---
-    log('Step 6: Adding HTTPD autostart...')
-    autostart_jcl = """//AUTOHTTP JOB (TSO),'HTTPD AUTOSTART',CLASS=A,MSGCLASS=H,
+    # 5b: Create SYS2.PARMLIB(HTTPPRM0)
+    log('Step 5b: Creating SYS2.PARMLIB(HTTPPRM0)...')
+    httpd_parm_jcl = """//HTTDPRM JOB (TSO),'HTTPD PARMLIB',CLASS=A,MSGCLASS=H,
+//             MSGLEVEL=(1,1),REGION=0M,USER=IBMUSER,PASSWORD=SYS1
+//*
+//WRPRM    EXEC PGM=IKJEFT01,PARM='BREXX EXEC'
+//EXEC     DD DATA,DLM=##
+/* REXX - Create SYS2.PARMLIB(HTTPPRM0) */
+ADDRESS TSO
+"ALLOC F(OUT) DA('SYS2.PARMLIB(HTTPPRM0)') SHR REUSE"
+line.1  = '-- Lua HTTPD Configuration'
+line.2  = 'httpd.port=8080'
+line.3  = 'httpd.tzoffset=60'
+line.4  = 'httpd.debug=1'
+line.5  = 'httpd.client_timeout=1'
+line.6  = 'httpd.client_timeout_msg=0'
+line.7  = 'httpd.client_timeout_dump=0'
+line.8  = 'httpd.client_stats=0'
+line.9  = 'httpd.ftp=1'
+line.10 = 'ftpd.port=2121'
+line.11 = 'httpd.docroot="/www"'
+line.12 = 'cgi.MVSMF="/zosmf/*"'
+line.0  = 12
+"EXECIO" line.0 "DISKW OUT (STEM LINE. FINIS"
+"FREE F(OUT)"
+SAY 'HTTPPRM0 created'
+EXIT 0
+##
+//TSOLIB   DD DSN=BREXX.V2R5M3.LINKLIB,DISP=SHR
+//RXLIB    DD DSN=BREXX.V2R5M3.RXLIB,DISP=SHR
+//SYSPRINT DD SYSOUT=*
+//SYSTSPRT DD SYSOUT=*
+//SYSTSIN  DD DUMMY
+//STDOUT   DD SYSOUT=*,DCB=(RECFM=FB,LRECL=140,BLKSIZE=5600)
+//STDERR   DD SYSOUT=*,DCB=(RECFM=FB,LRECL=140,BLKSIZE=5600)
+//STDIN    DD DUMMY
+"""
+    submit_ascii(httpd_parm_jcl)
+    log('  PARMLIB job submitted, waiting...')
+    if not wait_for_job(logfile, 'HTTDPRM', JOB_TIMEOUT):
+        log('ERROR: HTTPD PARMLIB job did not complete')
+        dump_log_tail(logfile, 15)
+        herc.kill()
+        sys.exit(1)
+    log('  SYS2.PARMLIB(HTTPPRM0) created')
+    time.sleep(3)
+
+    # --- Step 6: Configure mvsMF ---
+    # mvsMF CGI mapping is already in HTTPPRM0 (cgi.MVSMF="/zosmf/*")
+    # mvsMF load modules were received directly into HTTPD.LINKLIB in Step 4
+    log('Step 6: mvsMF configuration complete (CGI in HTTPPRM0, modules in HTTPD.LINKLIB)')
+
+    # --- Step 7: Configure UFSD ---
+    log('Step 7a: Creating SYS2.PARMLIB(UFSDPRM0)...')
+    parmlib_jcl = """//UFSDPRM JOB (TSO),'UFSD PARMLIB',CLASS=A,MSGCLASS=H,
+//             MSGLEVEL=(1,1),REGION=0M,USER=IBMUSER,PASSWORD=SYS1
+//*
+//WRPRM    EXEC PGM=IKJEFT01,PARM='BREXX EXEC'
+//EXEC     DD DATA,DLM=##
+/* REXX - Create SYS2.PARMLIB(UFSDPRM0) */
+ADDRESS TSO
+"ALLOC F(OUT) DA('SYS2.PARMLIB(UFSDPRM0)') SHR REUSE"
+line.1 = '/* UFSDPRM0 */'
+line.2 = 'ROOT DSN(UFSD.ROOT)'
+line.3 = 'MOUNT DSN(HTTPD.WEBROOT) PATH(/www) MODE(RO)'
+line.4 = 'MOUNT DSN(UFSD.SCRATCH) PATH(/tmp) MODE(RW)'
+m = 'MOUNT DSN(IBMUSER.UFSHOME)'
+m = m 'PATH(/u/ibmuser) MODE(RW)'
+m = m 'OWNER(IBMUSER)'
+line.5 = m
+line.0 = 5
+"EXECIO" line.0 "DISKW OUT (STEM LINE. FINIS"
+"FREE F(OUT)"
+SAY 'UFSDPRM0 created'
+EXIT 0
+##
+//TSOLIB   DD DSN=BREXX.V2R5M3.LINKLIB,DISP=SHR
+//RXLIB    DD DSN=BREXX.V2R5M3.RXLIB,DISP=SHR
+//SYSPRINT DD SYSOUT=*
+//SYSTSPRT DD SYSOUT=*
+//SYSTSIN  DD DUMMY
+//STDOUT   DD SYSOUT=*,DCB=(RECFM=FB,LRECL=140,BLKSIZE=5600)
+//STDERR   DD SYSOUT=*,DCB=(RECFM=FB,LRECL=140,BLKSIZE=5600)
+//STDIN    DD DUMMY
+"""
+    submit_ascii(parmlib_jcl)
+    log('  PARMLIB job submitted, waiting...')
+    if not wait_for_job(logfile, 'UFSDPRM', JOB_TIMEOUT):
+        log('ERROR: UFSD PARMLIB job did not complete')
+        dump_log_tail(logfile, 15)
+        herc.kill()
+        sys.exit(1)
+    log('  SYS2.PARMLIB(UFSDPRM0) created')
+    time.sleep(3)
+
+    log('Step 7b: Creating SYS2.PROCLIB(UFSD)...')
+    proclib_jcl = """//UFSDPRC JOB (TSO),'UFSD PROCLIB',CLASS=A,MSGCLASS=H,
+//             MSGLEVEL=(1,1),REGION=0M,USER=IBMUSER,PASSWORD=SYS1
+//*
+//WRPRC    EXEC PGM=IKJEFT01,PARM='BREXX EXEC'
+//EXEC     DD DATA,DLM=##
+/* REXX - Create SYS2.PROCLIB(UFSD) */
+ADDRESS TSO
+"ALLOC F(OUT) DA('SYS2.PROCLIB(UFSD)') SHR REUSE"
+line.1  = '//UFSD     PROC M=UFSDPRM0,'
+line.2  = "//            D='SYS2.PARMLIB'"
+line.3  = '//*'
+line.4  = '//CLEANUP  EXEC PGM=UFSDCLNP'
+line.5  = '//STEPLIB  DD  DISP=SHR,DSN=UFSD.LINKLIB'
+line.6  = '//UFSD     EXEC PGM=UFSD,REGION=4M,TIME=1440'
+line.7  = '//STEPLIB  DD  DISP=SHR,DSN=UFSD.LINKLIB'
+line.8  = '//SYSUDUMP DD  SYSOUT=*'
+line.9  = '//UFSDPRM  DD  DSN=&D(&M),DISP=SHR,FREE=CLOSE'
+line.0  = 9
+"EXECIO" line.0 "DISKW OUT (STEM LINE. FINIS"
+"FREE F(OUT)"
+SAY 'UFSD STC proc created'
+EXIT 0
+##
+//TSOLIB   DD DSN=BREXX.V2R5M3.LINKLIB,DISP=SHR
+//RXLIB    DD DSN=BREXX.V2R5M3.RXLIB,DISP=SHR
+//SYSPRINT DD SYSOUT=*
+//SYSTSPRT DD SYSOUT=*
+//SYSTSIN  DD DUMMY
+//STDOUT   DD SYSOUT=*,DCB=(RECFM=FB,LRECL=140,BLKSIZE=5600)
+//STDERR   DD SYSOUT=*,DCB=(RECFM=FB,LRECL=140,BLKSIZE=5600)
+//STDIN    DD DUMMY
+"""
+    submit_ascii(proclib_jcl)
+    log('  PROCLIB job submitted, waiting...')
+    if not wait_for_job(logfile, 'UFSDPRC', JOB_TIMEOUT):
+        log('ERROR: UFSD PROCLIB job did not complete')
+        dump_log_tail(logfile, 15)
+        herc.kill()
+        sys.exit(1)
+    log('  SYS2.PROCLIB(UFSD) created')
+    time.sleep(3)
+
+    # --- Step 8: Start HTTPD and test connection ---
+    log('Step 8: Starting HTTPD...')
+    start_httpd_jcl = """//STARTHTP JOB (TSO),'START HTTPD',CLASS=A,MSGCLASS=H,
+//             MSGLEVEL=(1,1),REGION=0M,USER=IBMUSER,PASSWORD=SYS1
+//*
+//START    EXEC PGM=IKJEFT01,PARM='BREXX EXEC'
+//EXEC     DD DATA,DLM=##
+/* REXX - Start HTTPD */
+ADDRESS CONSOLE
+'S HTTPD'
+EXIT 0
+##
+//TSOLIB   DD DSN=BREXX.V2R5M3.LINKLIB,DISP=SHR
+//RXLIB    DD DSN=BREXX.V2R5M3.RXLIB,DISP=SHR
+//SYSPRINT DD SYSOUT=*
+//SYSTSPRT DD SYSOUT=*
+//SYSTSIN  DD DUMMY
+//STDOUT   DD SYSOUT=*,DCB=(RECFM=FB,LRECL=140,BLKSIZE=5600)
+//STDERR   DD SYSOUT=*,DCB=(RECFM=FB,LRECL=140,BLKSIZE=5600)
+//STDIN    DD DUMMY
+"""
+    submit_ascii(start_httpd_jcl)
+    log('  HTTPD start job submitted, waiting...')
+    if not wait_for_job(logfile, 'STARTHTP', JOB_TIMEOUT):
+        log('ERROR: HTTPD start job did not complete')
+        dump_log_tail(logfile, 15)
+        herc.kill()
+        sys.exit(1)
+    log('  HTTPD start command issued')
+
+    log('Waiting for HTTPD port 8080...')
+    if not wait_for_port(8080, timeout=60):
+        log('ERROR: HTTPD port 8080 not available')
+        dump_log_tail(logfile, 20)
+        herc.kill()
+        sys.exit(1)
+    log('  HTTPD is listening on port 8080')
+    time.sleep(3)
+
+    # Test mvsMF endpoint
+    log('Step 8: Testing mvsMF /zosmf/info endpoint...')
+    import urllib.request
+    import base64
+    try:
+        req = urllib.request.Request('http://127.0.0.1:8080/zosmf/info')
+        credentials = base64.b64encode(b'IBMUSER:SYS1').decode()
+        req.add_header('Authorization', f'Basic {credentials}')
+        resp = urllib.request.urlopen(req, timeout=10)
+        body = resp.read().decode()
+        log(f'  mvsMF response: {resp.status} - {body[:100]}')
+    except Exception as e:
+        log(f'WARNING: mvsMF test failed: {e}')
+        dump_log_tail(logfile, 20)
+
+    # --- Step 9: Create and upload ufsd-root.img ---
+    log('Step 9: Creating ufsd-root.img...')
+    mvs_env = {
+        **os.environ,
+        'MVS_HOST': '127.0.0.1',
+        'MVS_PORT': '8080',
+        'MVS_USER': 'IBMUSER',
+        'MVS_PASS': 'SYS1',
+    }
+    subprocess.run(
+        ['ufsd-utils', 'create', '/tmp/ufsd-root.img',
+         '--size', '1MB', '-owner', 'UFSD', '-group', 'SYS1'],
+        check=True
+    )
+    log('  ufsd-root.img created')
+
+    log('Step 9: Uploading ufsd-root.img to UFSD.ROOT...')
+    subprocess.run(
+        ['ufsd-utils', 'upload', '/tmp/ufsd-root.img', '--dsn', 'UFSD.ROOT'],
+        env=mvs_env, check=True
+    )
+    log('  ufsd-root.img uploaded to UFSD.ROOT')
+
+    # Create and upload IBMUSER.UFSHOME (5MB)
+    log('Step 9: Creating ibmuser-home.img...')
+    subprocess.run(
+        ['ufsd-utils', 'create', '/tmp/ibmuser-home.img',
+         '--size', '5MB', '-owner', 'IBMUSER', '-group', 'USER'],
+        check=True
+    )
+    log('  ibmuser-home.img created')
+    log('Step 9: Uploading ibmuser-home.img to IBMUSER.UFSHOME...')
+    subprocess.run(
+        ['ufsd-utils', 'upload', '/tmp/ibmuser-home.img', '--dsn', 'IBMUSER.UFSHOME'],
+        env=mvs_env, check=True
+    )
+    log('  ibmuser-home.img uploaded to IBMUSER.UFSHOME')
+
+    # Create and upload UFSD.SCRATCH (10MB)
+    log('Step 9: Creating scratch.img...')
+    subprocess.run(
+        ['ufsd-utils', 'create', '/tmp/scratch.img',
+         '--size', '10MB', '-owner', 'UFSD', '-group', 'SYS1'],
+        check=True
+    )
+    log('  scratch.img created')
+    log('Step 9: Uploading scratch.img to UFSD.SCRATCH...')
+    subprocess.run(
+        ['ufsd-utils', 'upload', '/tmp/scratch.img', '--dsn', 'UFSD.SCRATCH'],
+        env=mvs_env, check=True
+    )
+    log('  scratch.img uploaded to UFSD.SCRATCH')
+
+    # --- Step 10: Upload wwwroot_v3.img ---
+    log('Step 10: Uploading wwwroot_v3.img to HTTPD.WEBROOT...')
+    subprocess.run(
+        ['ufsd-utils', 'upload', '/tmp/wwwroot_v3.img', '--dsn', 'HTTPD.WEBROOT'],
+        env=mvs_env, check=True
+    )
+    log('  wwwroot_v3.img uploaded to HTTPD.WEBROOT')
+
+    # --- Add UFSD and HTTPD autostart to COMMND00 ---
+    log('Adding UFSD and HTTPD autostart to COMMND00...')
+    autostart_jcl = """//AUTOSTRT JOB (TSO),'AUTOSTART',CLASS=A,MSGCLASS=H,
 //             MSGLEVEL=(1,1),REGION=0M,USER=IBMUSER,PASSWORD=SYS1
 //*
 //ADDCMD   EXEC PGM=IKJEFT01,PARM='BREXX EXEC'
 //EXEC     DD DATA,DLM=##
-/* REXX - Add HTTPD auto-start to COMMND00 */
+/* REXX - Add UFSD and HTTPD auto-start to COMMND00 */
 ADDRESS TSO
 "ALLOC F(CFGIN) DA('SYS1.PARMLIB(COMMND00)') SHR REUSE"
 "EXECIO * DISKR CFGIN (STEM LINE. FINIS"
-found = 0
+found_ufsd = 0
+found_httpd = 0
 DO i = 1 TO line.0
-  IF POS('S HTTPD', line.i) > 0 THEN found = 1
+  IF POS('S UFSD', line.i) > 0 THEN found_ufsd = 1
+  IF POS('S HTTPD', line.i) > 0 THEN found_httpd = 1
 END
-IF found = 0 THEN DO
+IF found_ufsd = 0 THEN DO
+  line.0 = line.0 + 1
+  n = line.0
+  line.n = "COM='S UFSD'"
+END
+IF found_httpd = 0 THEN DO
   line.0 = line.0 + 1
   n = line.0
   line.n = "COM='S HTTPD'"
@@ -380,7 +681,9 @@ END
 "ALLOC F(CFGOUT) DA('SYS1.PARMLIB(COMMND00)') SHR REUSE"
 "EXECIO" line.0 "DISKW CFGOUT (STEM LINE. FINIS"
 "FREE F(CFGIN CFGOUT)"
-IF found = 0 THEN SAY 'HTTPD auto-start added to COMMND00'
+IF found_ufsd = 0 THEN SAY 'UFSD auto-start added to COMMND00'
+ELSE SAY 'UFSD auto-start already present'
+IF found_httpd = 0 THEN SAY 'HTTPD auto-start added to COMMND00'
 ELSE SAY 'HTTPD auto-start already present'
 EXIT 0
 ##
@@ -395,46 +698,26 @@ EXIT 0
 """
     submit_ascii(autostart_jcl)
     log('  Autostart job submitted, waiting...')
-    if not wait_for_job(logfile, 'AUTOHTTP', JOB_TIMEOUT):
+    if not wait_for_job(logfile, 'AUTOSTRT', JOB_TIMEOUT):
         log('ERROR: Autostart config job did not complete')
         dump_log_tail(logfile, 15)
         herc.kill()
         sys.exit(1)
-    log('  HTTPD autostart configured')
+    log('  UFSD + HTTPD autostart configured')
     time.sleep(3)
 
-    # --- Step 7: Increase HTTPD REGION to 8192K ---
-    log('Step 7: Updating HTTPD REGION to 8192K...')
-    region_jcl = """//HTTPREG JOB (TSO),'HTTPD REGION',CLASS=A,MSGCLASS=H,
+    # --- Purge JES2 spool ---
+    log('Purging JES2 spool...')
+    purge_jcl = """//PURGESPL JOB (TSO),'PURGE SPOOL',CLASS=A,MSGCLASS=H,
 //             MSGLEVEL=(1,1),REGION=0M,USER=IBMUSER,PASSWORD=SYS1
 //*
-//UPDPROC  EXEC PGM=IKJEFT01,PARM='BREXX EXEC'
+//PURGE    EXEC PGM=IKJEFT01,PARM='BREXX EXEC'
 //EXEC     DD DATA,DLM=##
-/* REXX - Update REGION in SYS2.PROCLIB(HTTPD) to 8192K */
-ADDRESS TSO
-"ALLOC F(CFGIN) DA('SYS2.PROCLIB(HTTPD)') SHR REUSE"
-"EXECIO * DISKR CFGIN (STEM LINE. FINIS"
-changed = 0
-DO i = 1 TO line.0
-  p = POS('REGION=', line.i)
-  IF p > 0 THEN DO
-    /* Find end of REGION value (next comma or space) */
-    rest = SUBSTR(line.i, p + 7)
-    e = VERIFY(rest, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
-    IF e = 0 THEN e = LENGTH(rest) + 1
-    oldval = SUBSTR(rest, 1, e - 1)
-    IF oldval \= '8192K' THEN DO
-      line.i = SUBSTR(line.i, 1, p + 6) || '8192K' || SUBSTR(rest, e)
-      changed = 1
-      SAY 'Changed REGION=' || oldval || ' to REGION=8192K'
-    END
-  END
-END
-"ALLOC F(CFGOUT) DA('SYS2.PROCLIB(HTTPD)') SHR REUSE"
-"EXECIO" line.0 "DISKW CFGOUT (STEM LINE. FINIS"
-"FREE F(CFGIN CFGOUT)"
-IF changed = 0 THEN SAY 'REGION already 8192K or not found'
-ELSE SAY 'HTTPD REGION updated successfully'
+/* REXX - Purge JES2 spool */
+ADDRESS CONSOLE
+'$PS1-9999'
+'$PT1-9999'
+'$PJ1-9999'
 EXIT 0
 ##
 //TSOLIB   DD DSN=BREXX.V2R5M3.LINKLIB,DISP=SHR
@@ -446,15 +729,13 @@ EXIT 0
 //STDERR   DD SYSOUT=*,DCB=(RECFM=FB,LRECL=140,BLKSIZE=5600)
 //STDIN    DD DUMMY
 """
-    submit_ascii(region_jcl)
-    log('  HTTPD REGION job submitted, waiting...')
-    if not wait_for_job(logfile, 'HTTPREG', JOB_TIMEOUT):
-        log('ERROR: HTTPD REGION update job did not complete')
-        dump_log_tail(logfile, 15)
-        herc.kill()
-        sys.exit(1)
-    log('  HTTPD REGION updated to 8192K')
-    time.sleep(3)
+    submit_ascii(purge_jcl)
+    log('  Purge job submitted, waiting...')
+    if not wait_for_job(logfile, 'PURGESPL', JOB_TIMEOUT):
+        log('WARNING: Purge job did not complete')
+    else:
+        log('  JES2 spool purged')
+    time.sleep(5)
 
     # --- Shutdown MVS ---
     log('Shutting down MVS...')
@@ -482,7 +763,7 @@ EXIT 0
     except subprocess.TimeoutExpired:
         herc.kill()
 
-    log('Done! HTTPD + mvsMF installed successfully.')
+    log('Done! UFSD + HTTPD + mvsMF installed successfully.')
 
 
 if __name__ == '__main__':
