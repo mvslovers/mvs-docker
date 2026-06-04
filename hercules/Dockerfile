@@ -45,7 +45,12 @@ RUN git clone https://github.com/wrljet/hercules-helper.git
 
 WORKDIR /build
 
-RUN /opt/hercules-helper/hercules-buildall.sh \
+# Build with a portable -O3 instead of hercules-helper's default -march=native.
+# -march=native bakes in the build runner's CPU instructions (e.g. ARMv9/SVE2 on
+# GitHub's arm64 runners), which crash with SIGILL on other hosts such as Apple
+# silicon. opt_configure_optimization overrides the helper's optimization flags.
+RUN opt_configure_optimization="-O3" \
+  /opt/hercules-helper/hercules-buildall.sh \
   --auto \
   --flavor=${HERCULES_FLAVOR} \
   ${HERCULES_REF:+--git-commit=${HERCULES_REF}} \
@@ -58,6 +63,13 @@ RUN /opt/hercules-helper/hercules-buildall.sh \
   --prefix=/usr/local
 
 FROM ubuntu:26.04
+
+# netbase provides /etc/protocols and /etc/services, which Hercules needs for
+# socket setup (getprotobyname / getservbyname); without it networking fails.
+RUN apt-get update && \
+  apt-get install -y --no-install-recommends netbase && \
+  apt-get clean && \
+  rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/local /usr/local
 
