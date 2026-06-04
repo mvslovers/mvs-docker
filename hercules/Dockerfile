@@ -3,6 +3,9 @@ FROM ubuntu:26.04 AS builder
 ARG TARGETARCH
 ARG TARGETPLATFORM
 ARG HERCULES_FLAVOR=sdl-hyperion
+# Optional: pin Hercules to a specific Hyperion git ref (e.g. a release tag
+# like "Release_4.9.1"). Empty = build the current main HEAD (DEV build).
+ARG HERCULES_REF=
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -45,6 +48,7 @@ WORKDIR /build
 RUN /opt/hercules-helper/hercules-buildall.sh \
   --auto \
   --flavor=${HERCULES_FLAVOR} \
+  ${HERCULES_REF:+--git-commit=${HERCULES_REF}} \
   --accept-root \
   --no-packages \
   --no-tests \
