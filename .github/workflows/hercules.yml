@@ -19,7 +19,88 @@ env:
   IMAGE_NAME: ghcr.io/mvslovers/hercules
 
 jobs:
-  build:
+  build-amd64:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build amd64
+        uses: docker/build-push-action@v6
+        with:
+          context: ./hercules
+          platforms: linux/amd64
+          load: true
+          tags: hercules:test-amd64
+
+      - name: Test amd64 image
+        run: |
+          docker run --rm hercules:test-amd64 hercules --version
+
+      - name: Push amd64 image
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./hercules
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:amd64
+
+  build-arm64:
+    runs-on: ubuntu-24.04-arm
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build arm64
+        uses: docker/build-push-action@v6
+        with:
+          context: ./hercules
+          platforms: linux/arm64
+          load: true
+          tags: hercules:test-arm64
+
+      - name: Test arm64 image
+        run: |
+          docker run --rm hercules:test-arm64 hercules --version
+
+      - name: Push arm64 image
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./hercules
+          platforms: linux/arm64
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:arm64
+
+  manifest:
+    needs:
+      - build-amd64
+      - build-arm64
+
+    if: github.event_name != 'pull_request'
 
     runs-on: ubuntu-latest
 
@@ -28,37 +109,20 @@ jobs:
       packages: write
 
     steps:
-
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest
+      - name: Create latest manifest
+        run: |
+          docker buildx imagetools create 
+            -t ${{ env.IMAGE_NAME }}:latest 
+            ${{ env.IMAGE_NAME }}:amd64 
+            ${{ env.IMAGE_NAME }}:arm64
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: ./hercules
-          platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+      - name: Inspect manifest
+        run: |
+          docker buildx imagetools inspect 
+            ${{ env.IMAGE_NAME }}:latest
