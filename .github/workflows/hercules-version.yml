@@ -1,16 +1,15 @@
 name: Build Hercules Version
 run-name: Build Hercules ${{ inputs.version }}
 
-# Manually build a pinned Hercules release from a Hyperion git tag.
-# Input is the Hyperion tag suffix (what follows "Release_"):
-#   "4.8"   -> HERCULES_REF=Release_4.8   -> image tags 4.8.0 / 4.8.0-amd64 / ...
-#   "4.9.1" -> HERCULES_REF=Release_4.9.1 -> image tags 4.9.1 / 4.9.1-amd64 / ...
-# The exact image tag is always normalized to 3 components (X.Y -> X.Y.0) so it
-# never collides with a rolling alias (4.8 / 4 / latest), which are owned by the
-# retag workflow.
+# Manually build a single pinned Hercules release. Input is the Hyperion tag
+# suffix (what follows "Release_"):
+#   "4.8"   -> ref Release_4.8   -> image tag 4.8.0
+#   "4.9.1" -> ref Release_4.9.1 -> image tag 4.9.1
+# The exact image tag is normalized to 3 components so it never collides with a
+# rolling alias. The actual build is delegated to the reusable hercules-build-one.
 #
 # This does NOT touch :latest or rolling aliases - run "Retag Hercules aliases"
-# afterwards to (re)compute them over the new set of release images.
+# afterwards to (re)compute them.
 
 on:
   workflow_dispatch:
@@ -20,8 +19,9 @@ on:
         required: true
         default: "4.9.1"
 
-env:
-  IMAGE_NAME: ghcr.io/mvslovers/hercules
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   prep:
@@ -42,105 +42,10 @@ jobs:
           echo "ref=Release_${v}" >> "$GITHUB_OUTPUT"
           echo "input '${v}' -> ref Release_${v}, image tag ${tag}"
 
-  build-amd64:
+  build:
     needs: prep
-    runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build amd64
-        uses: docker/build-push-action@v7
-        with:
-          context: ./hercules
-          platforms: linux/amd64
-          load: true
-          build-args: |
-            HERCULES_REF=${{ needs.prep.outputs.ref }}
-          tags: hercules:test-amd64
-
-      - name: Test amd64 image
-        run: |
-          docker run --rm hercules:test-amd64 hercules --version
-
-      - name: Push amd64 image
-        run: |
-          docker tag hercules:test-amd64 ${{ env.IMAGE_NAME }}:${{ needs.prep.outputs.tag }}-amd64
-          docker push ${{ env.IMAGE_NAME }}:${{ needs.prep.outputs.tag }}-amd64
-
-  build-arm64:
-    needs: prep
-    runs-on: ubuntu-24.04-arm
-
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build arm64
-        uses: docker/build-push-action@v7
-        with:
-          context: ./hercules
-          platforms: linux/arm64
-          load: true
-          build-args: |
-            HERCULES_REF=${{ needs.prep.outputs.ref }}
-          tags: hercules:test-arm64
-
-      - name: Test arm64 image
-        run: |
-          docker run --rm hercules:test-arm64 hercules --version
-
-      - name: Push arm64 image
-        run: |
-          docker tag hercules:test-arm64 ${{ env.IMAGE_NAME }}:${{ needs.prep.outputs.tag }}-arm64
-          docker push ${{ env.IMAGE_NAME }}:${{ needs.prep.outputs.tag }}-arm64
-
-  manifest:
-    needs:
-      - prep
-      - build-amd64
-      - build-arm64
-
-    runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create version manifest
-        run: |
-          docker buildx imagetools create \
-            -t ${{ env.IMAGE_NAME }}:${{ needs.prep.outputs.tag }} \
-            ${{ env.IMAGE_NAME }}:${{ needs.prep.outputs.tag }}-amd64 \
-            ${{ env.IMAGE_NAME }}:${{ needs.prep.outputs.tag }}-arm64
-
-      - name: Inspect manifest
-        run: |
-          docker buildx imagetools inspect \
-            ${{ env.IMAGE_NAME }}:${{ needs.prep.outputs.tag }}
+    uses: ./.github/workflows/hercules-build-one.yml
+    with:
+      version: ${{ needs.prep.outputs.tag }}
+      ref: ${{ needs.prep.outputs.ref }}
+    secrets: inherit

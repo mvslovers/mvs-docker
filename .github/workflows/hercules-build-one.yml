@@ -1,0 +1,116 @@
+name: Build one Hercules version (reusable)
+
+# Reusable build for a single pinned Hercules release. Builds both arches once
+# (load + test), then pushes the tested image. Tags: X.Y.Z plus X.Y.Z-amd64 /
+# X.Y.Z-arm64 and a multi-arch manifest. Does NOT touch rolling aliases.
+#
+# Inputs are already resolved by the caller:
+#   version = exact 3-part image tag (e.g. 4.7.0)
+#   ref     = Hyperion git ref       (e.g. Release_4.7)
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      ref:
+        required: true
+        type: string
+
+env:
+  IMAGE_NAME: ghcr.io/mvslovers/hercules
+
+jobs:
+  build-amd64:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build amd64
+        uses: docker/build-push-action@v7
+        with:
+          context: ./hercules
+          platforms: linux/amd64
+          load: true
+          build-args: |
+            HERCULES_REF=${{ inputs.ref }}
+          tags: hercules:test-amd64
+
+      - name: Test amd64 image
+        run: |
+          docker run --rm hercules:test-amd64 hercules --version
+
+      - name: Push amd64 image
+        run: |
+          docker tag hercules:test-amd64 ${{ env.IMAGE_NAME }}:${{ inputs.version }}-amd64
+          docker push ${{ env.IMAGE_NAME }}:${{ inputs.version }}-amd64
+
+  build-arm64:
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build arm64
+        uses: docker/build-push-action@v7
+        with:
+          context: ./hercules
+          platforms: linux/arm64
+          load: true
+          build-args: |
+            HERCULES_REF=${{ inputs.ref }}
+          tags: hercules:test-arm64
+
+      - name: Test arm64 image
+        run: |
+          docker run --rm hercules:test-arm64 hercules --version
+
+      - name: Push arm64 image
+        run: |
+          docker tag hercules:test-arm64 ${{ env.IMAGE_NAME }}:${{ inputs.version }}-arm64
+          docker push ${{ env.IMAGE_NAME }}:${{ inputs.version }}-arm64
+
+  manifest:
+    needs:
+      - build-amd64
+      - build-arm64
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create version manifest
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.IMAGE_NAME }}:${{ inputs.version }} \
+            ${{ env.IMAGE_NAME }}:${{ inputs.version }}-amd64 \
+            ${{ env.IMAGE_NAME }}:${{ inputs.version }}-arm64
+
+      - name: Inspect manifest
+        run: |
+          docker buildx imagetools inspect \
+            ${{ env.IMAGE_NAME }}:${{ inputs.version }}

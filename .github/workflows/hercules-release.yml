@@ -1,0 +1,90 @@
+name: Build Hercules Releases
+run-name: Hercules release poll
+
+# Poll SDL-Hyperion for release tags and build any that are missing in GHCR,
+# then recompute the rolling aliases. Runs daily and on demand.
+#
+#   plan   -> resolve desired exacts (>= MIN_VERSION), diff against GHCR
+#   build  -> build the missing ones, smallest version first (max-parallel: 1
+#             so they publish in ascending order); failures don't block others
+#   retag  -> recompute latest / X.Y / X over whatever is present
+#
+# Steady state (nothing missing) is normal: build is skipped, retag still runs.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 3 * * *"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/mvslovers/hercules
+  MIN_VERSION: "4.7"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      count: ${{ steps.plan.outputs.count }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Plan missing releases
+        id: plan
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          desired="$(bash .github/scripts/hercules-resolve-versions.sh "${MIN_VERSION}")"
+
+          items=""
+          while IFS="$(printf '\t')" read -r version ref; do
+            [ -z "$version" ] && continue
+            if docker buildx imagetools inspect "${IMAGE_NAME}:${version}" >/dev/null 2>&1; then
+              echo "present  ${version}"
+            else
+              echo "MISSING  ${version} (${ref})"
+              items="${items}{\"version\":\"${version}\",\"ref\":\"${ref}\"},"
+            fi
+          done <<< "$desired"
+          items="${items%,}"
+
+          cnt=0
+          [ -n "$items" ] && cnt=$(printf '%s' "$items" | tr ',' '\n' | grep -c '"version"')
+          echo "matrix={\"include\":[${items}]}" >> "$GITHUB_OUTPUT"
+          echo "count=${cnt}" >> "$GITHUB_OUTPUT"
+          echo "missing releases: ${cnt}"
+
+  build:
+    needs: plan
+    if: ${{ needs.plan.outputs.count != '0' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    uses: ./.github/workflows/hercules-build-one.yml
+    with:
+      version: ${{ matrix.version }}
+      ref: ${{ matrix.ref }}
+    secrets: inherit
+
+  retag:
+    needs:
+      - plan
+      - build
+    # Retag whenever planning succeeded - regardless of whether build ran, was
+    # skipped (steady state) or partially failed. But NOT if plan itself failed.
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    uses: ./.github/workflows/hercules-retag.yml
+    secrets: inherit
