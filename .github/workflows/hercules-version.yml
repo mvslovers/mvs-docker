@@ -1,18 +1,21 @@
 name: Build Hercules Version
 
 # Manually build a pinned Hercules release from a Hyperion git tag.
-# Input "4.9.1" -> Dockerfile build-arg HERCULES_REF=Release_4.9.1
-# -> image tags 4.9.1 / 4.9.1-amd64 / 4.9.1-arm64 (+ multi-arch manifest).
+# Input is the Hyperion tag suffix (what follows "Release_"):
+#   "4.8"   -> HERCULES_REF=Release_4.8   -> image tags 4.8.0 / 4.8.0-amd64 / ...
+#   "4.9.1" -> HERCULES_REF=Release_4.9.1 -> image tags 4.9.1 / 4.9.1-amd64 / ...
+# The exact image tag is always normalized to 3 components (X.Y -> X.Y.0) so it
+# never collides with a rolling alias (4.8 / 4 / latest), which are owned by the
+# retag workflow.
 #
-# This does NOT touch :latest or rolling aliases (4 / 4.9) yet - that logic
-# (and automatic release detection) comes with the scheduled poll, once this
-# manual path is proven.
+# This does NOT touch :latest or rolling aliases - run "Retag Hercules aliases"
+# afterwards to (re)compute them over the new set of release images.
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Hyperion release version (e.g. 4.9.1 -> Release_4.9.1)"
+        description: "Hyperion tag suffix (e.g. 4.8 or 4.9.1)"
         required: true
         default: "4.9.1"
 
@@ -20,7 +23,26 @@ env:
   IMAGE_NAME: ghcr.io/mvslovers/hercules
 
 jobs:
+  prep:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.norm.outputs.tag }}
+      ref: ${{ steps.norm.outputs.ref }}
+    steps:
+      - name: Normalize version
+        id: norm
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="${{ inputs.version }}"
+          IFS=. read -r a b c <<< "$v"
+          tag="${a}.${b:-0}.${c:-0}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "ref=Release_${v}" >> "$GITHUB_OUTPUT"
+          echo "input '${v}' -> ref Release_${v}, image tag ${tag}"
+
   build-amd64:
+    needs: prep
     runs-on: ubuntu-latest
 
     permissions:
@@ -43,7 +65,7 @@ jobs:
           platforms: linux/amd64
           load: true
           build-args: |
-            HERCULES_REF=Release_${{ inputs.version }}
+            HERCULES_REF=${{ needs.prep.outputs.ref }}
           tags: hercules:test-amd64
 
       - name: Test amd64 image
@@ -52,10 +74,11 @@ jobs:
 
       - name: Push amd64 image
         run: |
-          docker tag hercules:test-amd64 ${{ env.IMAGE_NAME }}:${{ inputs.version }}-amd64
-          docker push ${{ env.IMAGE_NAME }}:${{ inputs.version }}-amd64
+          docker tag hercules:test-amd64 ${{ env.IMAGE_NAME }}:${{ needs.prep.outputs.tag }}-amd64
+          docker push ${{ env.IMAGE_NAME }}:${{ needs.prep.outputs.tag }}-amd64
 
   build-arm64:
+    needs: prep
     runs-on: ubuntu-24.04-arm
 
     permissions:
@@ -78,7 +101,7 @@ jobs:
           platforms: linux/arm64
           load: true
           build-args: |
-            HERCULES_REF=Release_${{ inputs.version }}
+            HERCULES_REF=${{ needs.prep.outputs.ref }}
           tags: hercules:test-arm64
 
       - name: Test arm64 image
@@ -87,11 +110,12 @@ jobs:
 
       - name: Push arm64 image
         run: |
-          docker tag hercules:test-arm64 ${{ env.IMAGE_NAME }}:${{ inputs.version }}-arm64
-          docker push ${{ env.IMAGE_NAME }}:${{ inputs.version }}-arm64
+          docker tag hercules:test-arm64 ${{ env.IMAGE_NAME }}:${{ needs.prep.outputs.tag }}-arm64
+          docker push ${{ env.IMAGE_NAME }}:${{ needs.prep.outputs.tag }}-arm64
 
   manifest:
     needs:
+      - prep
       - build-amd64
       - build-arm64
 
@@ -111,11 +135,11 @@ jobs:
       - name: Create version manifest
         run: |
           docker buildx imagetools create \
-            -t ${{ env.IMAGE_NAME }}:${{ inputs.version }} \
-            ${{ env.IMAGE_NAME }}:${{ inputs.version }}-amd64 \
-            ${{ env.IMAGE_NAME }}:${{ inputs.version }}-arm64
+            -t ${{ env.IMAGE_NAME }}:${{ needs.prep.outputs.tag }} \
+            ${{ env.IMAGE_NAME }}:${{ needs.prep.outputs.tag }}-amd64 \
+            ${{ env.IMAGE_NAME }}:${{ needs.prep.outputs.tag }}-arm64
 
       - name: Inspect manifest
         run: |
           docker buildx imagetools inspect \
-            ${{ env.IMAGE_NAME }}:${{ inputs.version }}
+            ${{ env.IMAGE_NAME }}:${{ needs.prep.outputs.tag }}
