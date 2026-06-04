@@ -117,12 +117,12 @@ jobs:
 
       - name: Create latest manifest
         run: |
-          docker buildx imagetools create 
-            -t ${{ env.IMAGE_NAME }}:latest 
-            ${{ env.IMAGE_NAME }}:amd64 
+          docker buildx imagetools create \
+            -t ${{ env.IMAGE_NAME }}:latest \ 
+            ${{ env.IMAGE_NAME }}:amd64 \
             ${{ env.IMAGE_NAME }}:arm64
 
       - name: Inspect manifest
         run: |
-          docker buildx imagetools inspect 
+          docker buildx imagetools inspect \
             ${{ env.IMAGE_NAME }}:latest
