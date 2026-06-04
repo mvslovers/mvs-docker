@@ -1,12 +1,12 @@
-name: Build one Hercules version (reusable)
+name: Build one Hercules image (reusable)
 
-# Reusable build for a single pinned Hercules release. Builds both arches once
-# (load + test), then pushes the tested image. Tags: X.Y.Z plus X.Y.Z-amd64 /
-# X.Y.Z-arm64 and a multi-arch manifest. Does NOT touch rolling aliases.
+# Reusable build for a single Hercules image. Builds both arches once (load +
+# test), then pushes the tested image. Tags: <version> plus <version>-amd64 /
+# <version>-arm64 and a multi-arch manifest. Does NOT touch rolling aliases.
 #
-# Inputs are already resolved by the caller:
-#   version = exact 3-part image tag (e.g. 4.7.0)
-#   ref     = Hyperion git ref       (e.g. Release_4.7)
+# Inputs (already resolved by the caller):
+#   version = image tag (e.g. 4.7.0, or nightly)
+#   ref     = Hyperion git ref (e.g. Release_4.7); empty = build main HEAD
 
 on:
   workflow_call:
@@ -15,8 +15,9 @@ on:
         required: true
         type: string
       ref:
-        required: true
+        required: false
         type: string
+        default: ""
 
 env:
   IMAGE_NAME: ghcr.io/mvslovers/hercules

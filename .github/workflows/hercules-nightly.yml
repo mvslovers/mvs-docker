@@ -1,0 +1,23 @@
+name: Build Hercules Nightly
+run-name: Hercules nightly
+
+# Build the current Hyperion main HEAD (DEV) and publish it as :nightly.
+# Runs daily and on demand. Independent of releases - the rolling aliases and
+# :latest are owned by the release/retag flow and are never touched here.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * *"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  nightly:
+    # ref omitted -> empty -> hercules-build-one builds main HEAD
+    uses: ./.github/workflows/hercules-build-one.yml
+    with:
+      version: nightly
+    secrets: inherit
