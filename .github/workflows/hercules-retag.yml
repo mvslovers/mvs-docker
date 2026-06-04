@@ -1,0 +1,69 @@
+name: Retag Hercules aliases
+
+# Recompute and apply the rolling alias tags over the Hercules release images
+# that actually exist in GHCR:
+#   X.Y    -> newest patch within that minor
+#   X      -> newest version within that major
+#   latest -> newest release overall
+#
+# These are manifest-only retags (no rebuild) - cheap and idempotent. Run it
+# manually, or let the release poll call it after a backfill. It owns :latest;
+# the push CI no longer touches :latest (it publishes :edge only).
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+env:
+  IMAGE_NAME: ghcr.io/mvslovers/hercules
+
+jobs:
+  retag:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply rolling aliases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # All canonical releases (full Hyperion set), then keep only the
+          # exact tags that are actually present in GHCR. Aliases are computed
+          # over what exists, so every alias target is a real tag.
+          present=$(
+            bash .github/scripts/hercules-resolve-versions.sh \
+            | while IFS="$(printf '\t')" read -r version ref; do
+                if docker buildx imagetools inspect "${IMAGE_NAME}:${version}" >/dev/null 2>&1; then
+                  echo "$version"
+                fi
+              done
+          )
+
+          echo "Present release tags:"
+          echo "$present" | sed 's/^/  /'
+
+          if [ -z "$present" ]; then
+            echo "No release images present yet - nothing to alias."
+            exit 0
+          fi
+
+          echo "$present" | bash .github/scripts/hercules-aliases.sh \
+          | while IFS="$(printf '\t')" read -r alias target; do
+              [ -z "$alias" ] && continue
+              echo "retag ${alias} -> ${target}"
+              docker buildx imagetools create \
+                -t "${IMAGE_NAME}:${alias}" "${IMAGE_NAME}:${target}"
+            done

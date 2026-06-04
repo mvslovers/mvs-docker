@@ -121,15 +121,8 @@ jobs:
             ${{ env.IMAGE_NAME }}:edge-amd64 \
             ${{ env.IMAGE_NAME }}:edge-arm64
 
-      # INTERIM: keep :latest pointing at the current edge build so pulls of
-      # the bare image are not stale. Once the release flow (step 2b) owns
-      # :latest = newest release, REMOVE this and the -t latest below.
-      - name: Update latest (interim alias of edge)
-        run: |
-          docker buildx imagetools create \
-            -t ${{ env.IMAGE_NAME }}:latest \
-            ${{ env.IMAGE_NAME }}:edge-amd64 \
-            ${{ env.IMAGE_NAME }}:edge-arm64
+      # NOTE: :latest is owned by the retag workflow (= newest release), the
+      # push CI publishes :edge only and must not touch :latest.
 
       - name: Inspect manifest
         run: |
