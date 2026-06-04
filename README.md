@@ -1,10 +1,178 @@
 # mvs-docker
 
-Docker images for MVS 3.8j development and CI/CD workflows.
+Multi-arch Docker / OCI images for running and building **MVS 3.8j on Hercules**.
+
+The foundational image is **`hercules`** — a ready-to-run build of the
+[SDL-Hyperion](https://github.com/SDL-Hercules-390/hyperion) S/370 emulator.
+The other images (development container, MVS/CE builder, test images) build on
+top of it.
 
 ## Images
 
-### mvs-dev
+| Image | Purpose | Status |
+|-------|---------|--------|
+| [`hercules`](#hercules) | SDL-Hyperion S/370 emulator — base image | published, multi-arch |
+| [`mvs-dev`](#mvs-dev) | Headless development container | published, outdated |
+| [`mvsce-builder`](#mvsce-builder) | MVS/CE + HTTPD + mvsMF for CI | published, outdated |
+| `mvstk4-test` / `mvstk5-test` / `mvsce-test` | Test images | planned |
+
+All images are published to `ghcr.io/mvslovers/<name>` and are public.
+
+> **Note:** `hercules` is currently the only multi-arch image (`amd64` +
+> `arm64`). `mvs-dev` and `mvsce-builder` predate it — they are `amd64`-only, do
+> **not** yet build on the `hercules` base image, and are slated to be reworked
+> (build on `hercules`, go multi-arch, and move to GitHub Actions). Treat their
+> sections below as the current — but outdated — state.
+
+---
+
+## hercules
+
+`ghcr.io/mvslovers/hercules` — the **SDL-Hyperion** Hercules emulator, built
+from [SDL-Hercules-390/hyperion](https://github.com/SDL-Hercules-390/hyperion)
+via [hercules-helper](https://github.com/wrljet/hercules-helper).
+
+- **Multi-arch:** `linux/amd64` and `linux/arm64` (one tag, the right arch is
+  pulled automatically — including Apple silicon).
+- **No MVS inside** — this is just the emulator. You bring your own DASD volumes
+  and Hercules configuration.
+
+### Quick start
+
+Print the Hercules version (works the same with Docker and Apple's `container`):
+
+```bash
+# Docker
+docker run --rm ghcr.io/mvslovers/hercules:latest hercules --version
+
+# Apple container
+container run --rm ghcr.io/mvslovers/hercules:latest hercules --version
+```
+
+> Apple's `container` CLI mirrors Docker's flags (`-it`, `-d`, `--rm`,
+> `--name`, `-v host:container`, `-p host:container`). Every example below works
+> with either — just swap `docker` ↔ `container`.
+
+### Tags
+
+Versioning follows the common Docker convention: `latest` is the newest stable
+**release**, dev builds live under their own tags, and every release is also
+available pinned.
+
+| Tag | Points to | Use it when |
+|-----|-----------|-------------|
+| `latest` | newest stable release | you just want a current, stable Hercules |
+| `4` | newest `4.x` release | follow the major line |
+| `4.9` | newest `4.9.x` patch | follow a minor line, auto-get patches |
+| `4.9.1`, `4.9.0`, `4.8.0`, `4.7.0` | that exact release | full reproducibility |
+| `edge` | current Hyperion `main` HEAD (DEV), rebuilt on Dockerfile changes | test the bleeding edge |
+| `nightly` | Hyperion `main` HEAD, rebuilt daily | track upstream development |
+
+**Pin what you depend on.** For anything reproducible — and *especially* for
+base images — pin an exact (`4.9.1`) or minor (`4.9`) tag. Avoid building on
+`latest`, `edge`, or `nightly`.
+
+Currently published releases: **`4.7.0`, `4.8.0`, `4.9.0`, `4.9.1`**. New
+SDL-Hyperion release tags are picked up and built automatically. Releases older
+than `4.7` are not provided — their sources no longer compile with the current
+GCC/C toolchain.
+
+### Run with your own DASD and configuration
+
+The image's working directory and volume is **`/hercules`**. Keep your Hercules
+config and DASD volume files in a local directory and mount it there:
+
+```text
+my-mvs/
+├── conf/
+│   └── mvs.cnf        # your Hercules config
+└── dasd/
+    └── ...               # your DASD volume files (referenced by the .cnf)
+```
+
+```bash
+# Docker
+docker run --rm -it \
+  -v "$PWD":/hercules \
+  -p 3270:3270 \
+  ghcr.io/mvslovers/hercules:4.9 \
+  hercules -f conf/mvs.cnf
+
+# Apple container
+container run --rm -it \
+  -v "$PWD":/hercules \
+  -p 3270:3270 \
+  ghcr.io/mvslovers/hercules:4.9 \
+  hercules -f conf/mvs.cnf
+```
+
+- `-it` gives Hercules an interactive console (panel).
+- Publish whatever ports your `.cnf` binds — commonly `3270` for TN3270, and
+  `8038` for the built-in HTTP console. Add more `-p` flags as needed.
+- Paths in your `.cnf` are resolved relative to `/hercules`, so `conf/...` and
+  `dasd/...` just work.
+
+### Use it like a locally installed `hercules`
+
+Add an alias so the containerized emulator behaves as if it were installed on
+your host — running against whatever directory you're currently in:
+
+```bash
+# ~/.zshrc or ~/.bashrc  (Docker)
+alias hercules='docker run --rm -it -v "$PWD":/hercules ghcr.io/mvslovers/hercules:4.9 hercules'
+
+# Apple container
+alias hercules='container run --rm -it -v "$PWD":/hercules ghcr.io/mvslovers/hercules:4.9 hercules'
+```
+
+Then, from any MVS directory:
+
+```bash
+cd my-mvs
+hercules --version
+hercules -f conf/mvs.cnf
+```
+
+### Use as a base image
+
+Bake your configuration and DASD into your own image by building `FROM`
+hercules:
+
+```dockerfile
+FROM ghcr.io/mvslovers/hercules:4.9
+
+# Your MVS system: config + DASD volumes
+COPY conf/ /hercules/conf/
+COPY dasd/ /hercules/dasd/
+
+EXPOSE 3270 8038
+CMD ["hercules", "-f", "conf/mvs.cnf"]
+```
+
+```bash
+docker build -t my-mvs .
+docker run --rm -it -p 3270:3270 my-mvs
+```
+
+**Pin a version** (here `4.9`) so an upstream Hercules change never silently
+alters your base. This is exactly how the planned `mvsce` / `tk4-` / `tk5`
+distribution images will build on `hercules`.
+
+### How it's built
+
+`hercules` is built and published by GitHub Actions (not `make`):
+
+- a **daily poll** checks SDL-Hyperion for release tags and builds any that are
+  missing (smallest version first), then updates the rolling aliases and
+  `latest`;
+- **`edge`** is rebuilt whenever the `hercules/` Dockerfile changes;
+- **`nightly`** rebuilds `main` HEAD once a day;
+- a single version can be built on demand via the **Build Hercules Version**
+  workflow (input is the Hyperion tag, e.g. `4.9.1`).
+
+---
+
+## mvs-dev
 
 Headless development container for MVS 3.8j projects. Contains all build tools,
 editors, and CLI utilities needed to cross-compile C to S/370 assembler and
@@ -16,7 +184,7 @@ This image does **not** contain MVS itself. It connects to an external MVS
 system (e.g. a separate mvsce-builder container, remote TK4-/TK5) configured
 via `.env` variables.
 
-#### Included Tools
+### Included Tools
 
 | Category | Tools |
 |----------|-------|
@@ -28,7 +196,7 @@ via `.env` variables.
 | Neovim Deps | fzf, ripgrep, fd, tree-sitter-cli, lazygit |
 | Utilities | python3, curl, jq, git, gh CLI, docker CLI |
 
-#### Standalone Usage
+### Standalone Usage
 
 ```bash
 docker pull ghcr.io/mvslovers/mvs-dev
@@ -37,9 +205,9 @@ docker pull ghcr.io/mvslovers/mvs-dev
 docker run -it -v "$(pwd)":/home/dev/workspace ghcr.io/mvslovers/mvs-dev
 ```
 
-#### Docker-outside-Docker with mvsce-builder
+### Docker-outside-Docker with mvsce-builder
 
-To start an mvsce-builder as the MVS backend from within the devcontainer,
+To start an mvsce-builder as the MVS backend from within mvs-dev,
 bind-mount the host Docker socket and use a shared Docker network so both
 containers can communicate by name:
 
@@ -64,28 +232,7 @@ curl -u IBMUSER:SYS1 http://mvs:1080/zosmf/info
 
 Set `MVSMF_HOST=mvs` and `MVSMF_PORT=1080` in your project's `.env` file.
 
-#### VS Code Devcontainer / GitHub Codespaces
-
-Create a `.devcontainer/devcontainer.json` in your project:
-
-```json
-{
-  "image": "ghcr.io/mvslovers/mvs-dev:latest",
-  "remoteUser": "dev",
-  "mounts": [
-    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
-  ],
-  "runArgs": ["--network=mvs-net"]
-}
-```
-
-Create the network before opening the devcontainer:
-`docker network create mvs-net`
-
-Open the project in VS Code with the Dev Containers extension, or push to
-GitHub and open in Codespaces.
-
-#### Connecting to MVS
+### Connecting to MVS
 
 The container connects to an external MVS system via environment variables.
 Create a `.env` file in your project (see each project's `.env.example`):
@@ -102,7 +249,7 @@ with MVS via the mvsMF REST API.
 
 ---
 
-### mvsce-builder
+## mvsce-builder
 
 Build image for CI pipelines. Contains a fully operational MVS/CE system
 with HTTPD and mvsMF (z/OSMF-compatible REST API) pre-installed.
@@ -114,7 +261,7 @@ Use cases:
 - Upload sources, submit JCL, poll results via REST API
 - Generate XMIT distribution files
 
-#### Usage
+### Usage
 
 ```bash
 docker pull ghcr.io/mvslovers/mvsce-builder
@@ -135,6 +282,10 @@ against different MVS configurations.
 **Status:** Planned
 
 ## Build
+
+`hercules` is built via GitHub Actions (see [How it's built](#how-its-built)).
+The other images are still built locally with `make`. They are being reworked to
+build on the `hercules` base image and will move to GitHub Actions as well:
 
 ```bash
 # Build all images
@@ -171,15 +322,17 @@ make clean
 
 ## Repository Structure
 
-```
+```text
 mvs-docker/
-├── mvs-dev/           mvs-dev image (headless devcontainer)
+├── hercules/          hercules image (SDL-Hyperion emulator, base image)
+├── mvs-dev/           mvs-dev image (headless development container)
 ├── mvsce-builder/     mvsce-builder image (MVS/CE + HTTPD + mvsMF)
 ├── mvstk4-test/       TK4- test image (planned)
 ├── mvstk5-test/       TK5 test image (planned)
 ├── mvsce-test/        MVS/CE test image (planned)
 ├── common/            shared scripts and configs
-├── Makefile           build/push/test automation
+├── .github/workflows/ CI: hercules build/release/retag/nightly
+├── Makefile           build/push/test automation (non-hercules images)
 └── README.md
 ```
 
@@ -187,6 +340,8 @@ mvs-docker/
 
 | Project | Purpose |
 |---------|---------|
+| [SDL-Hyperion](https://github.com/SDL-Hercules-390/hyperion) | The Hercules S/370 emulator built into the `hercules` image |
+| [hercules-helper](https://github.com/wrljet/hercules-helper) | Build automation used to compile Hercules |
 | [crent370](https://github.com/mvslovers/crent370) | C runtime library for MVS 3.8j |
 | [c2asm370](https://github.com/mvslovers/c2asm370) | Cross-compiler C to S/370 |
 | [mvsmf](https://github.com/mvslovers/mvsmf) | z/OSMF REST API for MVS 3.8j |
