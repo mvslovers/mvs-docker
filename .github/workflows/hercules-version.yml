@@ -1,4 +1,5 @@
 name: Build Hercules Version
+run-name: Build Hercules ${{ inputs.version }}
 
 # Manually build a pinned Hercules release from a Hyperion git tag.
 # Input is the Hyperion tag suffix (what follows "Release_"):
