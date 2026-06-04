@@ -4,18 +4,13 @@ on:
   push:
     branches:
       - main
-    # NOTE: "hercules/" matcht als Glob keine Dateien im Verzeichnis.
-    # Korrekt waere "hercules/**". Bewusst NICHT gefixt, damit der Workflow
-    # aktuell breit ausgeloest wird und ohne Dockerfile-Aenderung testbar bleibt.
-    # TODO: spaeter auf "hercules/**" umstellen.
     paths:
-      - "hercules/"
+      - "hercules/**"
       - ".github/workflows/hercules.yml"
 
   pull_request:
-    # TODO: siehe oben - spaeter auf "hercules/**" umstellen.
     paths:
-      - "hercules/"
+      - "hercules/**"
       - ".github/workflows/hercules.yml"
 
   workflow_dispatch:
