@@ -64,19 +64,18 @@ RUN opt_configure_optimization="-O3" \
 
 FROM ubuntu:26.04
 
-# netbase provides /etc/protocols and /etc/services, which Hercules needs for
-# socket setup (getprotobyname / getservbyname); without it networking fails.
+# Runtime dependencies not contained in the copied /usr/local:
+#   netbase        -> /etc/protocols + /etc/services (Hercules socket setup,
+#                     getprotobyname); without it networking fails
+#   libregina3-dev -> provides the unversioned libregina.so symlink that
+#                     Hercules dlopen()s at runtime for REXX automation
+#                     (see the hercules-helper README)
 RUN apt-get update && \
-  apt-get install -y --no-install-recommends netbase && \
+  apt-get install -y --no-install-recommends netbase libregina3-dev && \
   apt-get clean && \
   rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/local /usr/local
-
-# hercules-helper installs Regina REXX to /usr/lib (configure --libdir=/usr/lib),
-# outside the copied /usr/local. Bring its library along so Hercules can dlopen
-# libregina.so at runtime for REXX automation.
-COPY --from=builder /usr/lib/libregina* /usr/lib/
 
 RUN echo "/usr/local/lib" > /etc/ld.so.conf.d/hercules.conf && \
   ldconfig
