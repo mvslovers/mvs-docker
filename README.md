@@ -186,6 +186,21 @@ This image does **not** contain MVS itself. It connects to an external MVS
 system (e.g. a separate mvsce-builder container, remote TK4-/TK5) configured
 via `.env` variables.
 
+### Tags
+
+mvs-dev is versioned by its core tool — the **c2asm370** cross-compiler:
+
+| Tag | Points to |
+|-----|-----------|
+| `latest` | most recent build |
+| `1.2` | newest build containing c2asm370 1.2 (rolling) |
+| `1.2-YYYYMMDD` | an immutable snapshot for that day's toolchain |
+
+The other tools (neovim, Zowe, …) are pinned in the Dockerfile and may refresh
+within a c2asm370 line; the dated snapshot captures that exact state. **Pin a
+`1.2-YYYYMMDD` tag** (e.g. in your `.devcontainer/devcontainer.json`) for a fully
+reproducible dev environment.
+
 ### Included Tools
 
 | Category | Tools |
