@@ -4,6 +4,12 @@ ARG USERNAME=dev
 ARG USER_UID=1000
 ARG USER_GID=1000
 
+# ── Pinned tool versions (bump deliberately; keeps builds reproducible) ──
+ARG NEOVIM_VERSION=v0.12.2
+ARG LAZYGIT_VERSION=0.62.2
+ARG ZOWE_VERSION=8.32.2
+ARG TREE_SITTER_VERSION=0.26.9
+
 # ── System packages ──────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential clang clangd gcc make \
@@ -39,25 +45,23 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Zowe CLI ─────────────────────────────────────────────────────
-RUN npm install -g @zowe/cli
+RUN npm install -g @zowe/cli@${ZOWE_VERSION}
 
-# ── Neovim (latest stable binary) ───────────────────────────────
+# ── Neovim (pinned stable binary) ───────────────────────────────
 RUN curl -fsSL -o /tmp/nvim.tar.gz \
-      https://github.com/neovim/neovim/releases/latest/download/nvim-linux-x86_64.tar.gz \
+      https://github.com/neovim/neovim/releases/download/${NEOVIM_VERSION}/nvim-linux-x86_64.tar.gz \
     && tar xzf /tmp/nvim.tar.gz -C /opt \
     && ln -s /opt/nvim-linux-x86_64/bin/nvim /usr/local/bin/nvim \
     && rm /tmp/nvim.tar.gz
 
-# ── lazygit (latest release binary) ─────────────────────────────
-RUN LAZYGIT_VERSION=$(curl -fsSL https://api.github.com/repos/jesseduffield/lazygit/releases/latest \
-      | jq -r '.tag_name' | sed 's/^v//') \
-    && curl -fsSL -o /tmp/lazygit.tar.gz \
-      "https://github.com/jesseduffield/lazygit/releases/download/v${LAZYGIT_VERSION}/lazygit_${LAZYGIT_VERSION}_Linux_x86_64.tar.gz" \
+# ── lazygit (pinned release binary) ─────────────────────────────
+RUN curl -fsSL -o /tmp/lazygit.tar.gz \
+      "https://github.com/jesseduffield/lazygit/releases/download/v${LAZYGIT_VERSION}/lazygit_${LAZYGIT_VERSION}_linux_x86_64.tar.gz" \
     && tar xzf /tmp/lazygit.tar.gz -C /usr/local/bin lazygit \
     && rm /tmp/lazygit.tar.gz
 
 # ── tree-sitter CLI (for nvim-treesitter) ────────────────────────
-RUN npm install -g tree-sitter-cli
+RUN npm install -g tree-sitter-cli@${TREE_SITTER_VERSION}
 
 # ── c2asm370 (C → S/370 cross-compiler) ─────────────────────────
 ADD https://github.com/mvslovers/c2asm370/releases/download/v1.2/c2asm370-linux-x86.tar.gz /tmp/c2asm370.tar.gz

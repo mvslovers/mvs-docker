@@ -1,0 +1,68 @@
+name: Build mvs-dev
+run-name: Build mvs-dev
+
+# Build and publish the mvs-dev development container (amd64 only - the
+# c2asm370 cross-compiler ships as a 32-bit x86 binary, so there is no native
+# arm64 build yet). On pull requests: build + smoke-test only (no push).
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "mvs-dev/**"
+      - ".github/workflows/mvs-dev.yml"
+
+  pull_request:
+    paths:
+      - "mvs-dev/**"
+      - ".github/workflows/mvs-dev.yml"
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/mvslovers/mvs-dev
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/login-action@v4
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build mvs-dev (amd64)
+        uses: docker/build-push-action@v7
+        with:
+          context: ./mvs-dev
+          platforms: linux/amd64
+          load: true
+          tags: mvs-dev:test
+
+      - name: Smoke test
+        run: |
+          docker run --rm mvs-dev:test gh --version
+          docker run --rm mvs-dev:test node --version
+          docker run --rm mvs-dev:test nvim --version
+          docker run --rm mvs-dev:test lazygit --version
+          docker run --rm mvs-dev:test c2asm370 --version
+
+      - name: Push :latest
+        if: github.event_name != 'pull_request'
+        run: |
+          docker tag mvs-dev:test ${{ env.IMAGE_NAME }}:latest
+          docker push ${{ env.IMAGE_NAME }}:latest
