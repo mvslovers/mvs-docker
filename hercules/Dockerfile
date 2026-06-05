@@ -36,6 +36,8 @@ RUN rm -rf /var/lib/apt/lists/* && \
   make \
   gcc \
   g++ \
+  gawk \
+  libltdl-dev \
   zlib1g-dev \
   libbz2-dev && \
   apt-get clean && \
