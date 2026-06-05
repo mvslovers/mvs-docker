@@ -1,0 +1,41 @@
+name: Cleanup Hercules packages
+run-name: Hercules GHCR cleanup${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && ' (dry-run)' || '' }}
+
+# Delete untagged (orphaned) GHCR versions of the hercules package that are no
+# longer referenced by any tagged manifest. Such orphans accumulate whenever a
+# tag is reused/overwritten (the old digest loses its tag).
+#
+# The action is manifest-aware: untagged child platform images that ARE still
+# referenced by a tagged multi-arch manifest are preserved, so this is safe for
+# multi-arch images (and a prerequisite for a future push-by-digest setup).
+#
+# Manual runs default to a dry-run (log only). The weekly schedule deletes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (log what would be deleted, delete nothing)"
+        type: boolean
+        default: true
+  schedule:
+    - cron: "0 5 * * 0"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          owner: mvslovers
+          packages: hercules
+          delete-untagged: true
+          validate: true
+          # dispatch -> use the input (default true); schedule -> real delete
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
