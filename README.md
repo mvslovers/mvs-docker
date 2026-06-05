@@ -12,17 +12,19 @@ top of it.
 | Image | Purpose | Status |
 |-------|---------|--------|
 | [`hercules`](#hercules) | SDL-Hyperion S/370 emulator — base image | published, multi-arch |
-| [`mvs-dev`](#mvs-dev) | Headless development container | published, outdated |
+| [`mvs-dev`](#mvs-dev) | Headless development container | published, amd64 |
 | [`mvsce-builder`](#mvsce-builder) | MVS/CE + HTTPD + mvsMF for CI | published, outdated |
 | `mvstk4-test` / `mvstk5-test` / `mvsce-test` | Test images | planned |
 
 All images are published to `ghcr.io/mvslovers/<name>` and are public.
 
-> **Note:** `hercules` is currently the only multi-arch image (`amd64` +
-> `arm64`). `mvs-dev` and `mvsce-builder` predate it — they are `amd64`-only, do
-> **not** yet build on the `hercules` base image, and are slated to be reworked
-> (build on `hercules`, go multi-arch, and move to GitHub Actions). Treat their
-> sections below as the current — but outdated — state.
+> **Note on architectures:** `hercules` is multi-arch (`amd64` + `arm64`).
+> `mvs-dev` is built by CI and reproducible, but `amd64`-only for now — its
+> `c2asm370` cross-compiler has no native arm64 build yet. It does **not** use
+> the `hercules` base image (it is a toolchain that talks to a *remote* MVS, not
+> an MVS runtime). `mvsce-builder` is still the outdated one: built locally with
+> `make`, `amd64`-only, and slated to be reworked onto the `hercules` base,
+> multi-arch, and GitHub Actions.
 
 ---
 
@@ -283,9 +285,10 @@ against different MVS configurations.
 
 ## Build
 
-`hercules` is built via GitHub Actions (see [How it's built](#how-its-built)).
-The other images are still built locally with `make`. They are being reworked to
-build on the `hercules` base image and will move to GitHub Actions as well:
+`hercules` and `mvs-dev` are built and published by GitHub Actions (on changes
+under their respective directories). The remaining images are still built locally
+with `make` and are being reworked to build on the `hercules` base image and move
+to GitHub Actions as well:
 
 ```bash
 # Build all images
