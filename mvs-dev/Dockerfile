@@ -5,6 +5,8 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 
 # ── Pinned tool versions (bump deliberately; keeps builds reproducible) ──
+# C2ASM370_VERSION is also the image's "core" version used for tagging in CI.
+ARG C2ASM370_VERSION=1.2
 ARG NEOVIM_VERSION=v0.12.2
 ARG LAZYGIT_VERSION=0.62.2
 ARG ZOWE_VERSION=8.32.2
@@ -64,7 +66,7 @@ RUN curl -fsSL -o /tmp/lazygit.tar.gz \
 RUN npm install -g tree-sitter-cli@${TREE_SITTER_VERSION}
 
 # ── c2asm370 (C → S/370 cross-compiler) ─────────────────────────
-ADD https://github.com/mvslovers/c2asm370/releases/download/v1.2/c2asm370-linux-x86.tar.gz /tmp/c2asm370.tar.gz
+ADD https://github.com/mvslovers/c2asm370/releases/download/v${C2ASM370_VERSION}/c2asm370-linux-x86.tar.gz /tmp/c2asm370.tar.gz
 RUN tar xzf /tmp/c2asm370.tar.gz -C /usr/local/bin \
     && chmod +x /usr/local/bin/c2asm370 \
     && rm /tmp/c2asm370.tar.gz

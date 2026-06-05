@@ -61,8 +61,32 @@ jobs:
           docker run --rm mvs-dev:test lazygit --version
           docker run --rm mvs-dev:test c2asm370 --version
 
-      - name: Push :latest
-        if: github.event_name != 'pull_request'
+      # The image's "core" version = the c2asm370 it contains, read from the
+      # binary itself (no duplication). Tags: latest + <ver> (rolling) +
+      # <ver>-<date> (immutable snapshot for pinning/rollback).
+      - name: Derive c2asm370 version
+        id: ver
+        shell: bash
         run: |
-          docker tag mvs-dev:test ${{ env.IMAGE_NAME }}:latest
-          docker push ${{ env.IMAGE_NAME }}:latest
+          set -eo pipefail
+          v=$(docker run --rm mvs-dev:test c2asm370 --version \
+              | sed -n 's/.*c2asm370 version \([0-9][0-9.]*\).*/\1/p' | head -1)
+          if [ -z "$v" ]; then echo "could not parse c2asm370 version" >&2; exit 1; fi
+          d=$(date -u +%Y%m%d)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "date=$d" >> "$GITHUB_OUTPUT"
+          echo "c2asm370 version: $v  (snapshot $v-$d)"
+
+      - name: Push images
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          DATE: ${{ steps.ver.outputs.date }}
+        run: |
+          set -euo pipefail
+          for tag in latest "$VERSION" "${VERSION}-${DATE}"; do
+            echo "push ${IMAGE_NAME}:${tag}"
+            docker tag mvs-dev:test "${IMAGE_NAME}:${tag}"
+            docker push "${IMAGE_NAME}:${tag}"
+          done
