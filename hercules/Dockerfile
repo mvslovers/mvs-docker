@@ -35,7 +35,9 @@ RUN rm -rf /var/lib/apt/lists/* && \
   tar \
   make \
   gcc \
-  g++ && \
+  g++ \
+  zlib1g-dev \
+  libbz2-dev && \
   apt-get clean && \
   rm -rf /var/lib/apt/lists/*
 
@@ -70,8 +72,10 @@ FROM ubuntu:26.04
 #   libregina3-dev -> provides the unversioned libregina.so symlink that
 #                     Hercules dlopen()s at runtime for REXX automation
 #                     (see the hercules-helper README)
+#   zlib1g, libbz2-1.0 -> runtime libs for reading zlib/bzip2-compressed
+#                     CCKD DASD images (built with zlib1g-dev/libbz2-dev above)
 RUN apt-get update && \
-  apt-get install -y --no-install-recommends netbase libregina3-dev && \
+  apt-get install -y --no-install-recommends netbase libregina3-dev zlib1g libbz2-1.0 && \
   apt-get clean && \
   rm -rf /var/lib/apt/lists/*
 
