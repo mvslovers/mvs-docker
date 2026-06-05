@@ -13,6 +13,11 @@ run-name: Hercules release poll
 
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild every release even if already present"
+        type: boolean
+        default: false
   schedule:
     - cron: "30 3 * * *"
 
@@ -44,6 +49,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
         run: |
           set -euo pipefail
           desired="$(bash .github/scripts/hercules-resolve-versions.sh "${MIN_VERSION}")"
@@ -51,7 +57,7 @@ jobs:
           items=""
           while IFS="$(printf '\t')" read -r version ref; do
             [ -z "$version" ] && continue
-            if docker buildx imagetools inspect "${IMAGE_NAME}:${version}" >/dev/null 2>&1; then
+            if [ "${FORCE}" != "true" ] && docker buildx imagetools inspect "${IMAGE_NAME}:${version}" >/dev/null 2>&1; then
               echo "present  ${version}"
             else
               echo "MISSING  ${version} (${ref})"

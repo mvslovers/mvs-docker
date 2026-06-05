@@ -1,4 +1,5 @@
 name: Build Hercules
+run-name: Build Hercules edge
 
 on:
   push:
@@ -15,111 +16,17 @@ on:
 
   workflow_dispatch:
 
-env:
-  IMAGE_NAME: ghcr.io/mvslovers/hercules
+permissions:
+  contents: read
+  packages: write
 
 jobs:
-  build-amd64:
-    runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: docker/login-action@v4
-        if: github.event_name != 'pull_request'
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build amd64
-        uses: docker/build-push-action@v7
-        with:
-          context: ./hercules
-          platforms: linux/amd64
-          load: true
-          tags: hercules:test-amd64
-
-      - name: Test amd64 image
-        run: |
-          docker run --rm hercules:test-amd64 hercules --version
-
-      - name: Push amd64 image
-        if: github.event_name != 'pull_request'
-        run: |
-          docker tag hercules:test-amd64 ${{ env.IMAGE_NAME }}:edge-amd64
-          docker push ${{ env.IMAGE_NAME }}:edge-amd64
-
-  build-arm64:
-    runs-on: ubuntu-24.04-arm
-
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: docker/login-action@v4
-        if: github.event_name != 'pull_request'
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build arm64
-        uses: docker/build-push-action@v7
-        with:
-          context: ./hercules
-          platforms: linux/arm64
-          load: true
-          tags: hercules:test-arm64
-
-      - name: Test arm64 image
-        run: |
-          docker run --rm hercules:test-arm64 hercules --version
-
-      - name: Push arm64 image
-        if: github.event_name != 'pull_request'
-        run: |
-          docker tag hercules:test-arm64 ${{ env.IMAGE_NAME }}:edge-arm64
-          docker push ${{ env.IMAGE_NAME }}:edge-arm64
-
-  manifest:
-    needs:
-      - build-amd64
-      - build-arm64
-
-    if: github.event_name != 'pull_request'
-
-    runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create edge manifest
-        run: |
-          docker buildx imagetools create \
-            -t ${{ env.IMAGE_NAME }}:edge \
-            ${{ env.IMAGE_NAME }}:edge-amd64 \
-            ${{ env.IMAGE_NAME }}:edge-arm64
-
-      # NOTE: :latest is owned by the retag workflow (= newest release), the
-      # push CI publishes :edge only and must not touch :latest.
-
-      - name: Inspect manifest
-        run: |
-          docker buildx imagetools inspect \
-            ${{ env.IMAGE_NAME }}:edge
+  # Build :edge from Hyperion main HEAD via the shared reusable build.
+  # On pull requests: build + smoke-test only (push=false, no manifest).
+  # :latest is owned by the retag workflow; the push CI publishes :edge only.
+  edge:
+    uses: ./.github/workflows/hercules-build-one.yml
+    with:
+      version: edge
+      push: ${{ github.event_name != 'pull_request' }}
+    secrets: inherit

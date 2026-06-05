@@ -1,12 +1,16 @@
 name: Build one Hercules image (reusable)
 
-# Reusable build for a single Hercules image. Builds both arches once (load +
-# test), then pushes the tested image. Tags: <version> plus <version>-amd64 /
-# <version>-arm64 and a multi-arch manifest. Does NOT touch rolling aliases.
+# Reusable build for a single Hercules image, multi-arch via push-by-digest:
+# each arch is built and pushed by DIGEST (no per-arch tag), then a manifest
+# job assembles the real tag (<version>) from the two digests. This keeps the
+# package page clean - no <version>-amd64 / -arm64 tags; the per-arch images
+# exist only as untagged children referenced by the manifest.
 #
-# Inputs (already resolved by the caller):
-#   version = image tag (e.g. 4.7.0, or nightly)
-#   ref     = Hyperion git ref (e.g. Release_4.7); empty = build main HEAD
+# Inputs (resolved by the caller):
+#   version = image tag (e.g. 4.7.0, edge, nightly)
+#   ref     = Hyperion git ref (e.g. Release_4.7); empty = main HEAD
+#   push    = true  -> push by digest + assemble manifest (default)
+#             false -> build + load + smoke-test only (for PR validation)
 
 on:
   workflow_call:
@@ -18,6 +22,10 @@ on:
         required: false
         type: string
         default: ""
+      push:
+        required: false
+        type: boolean
+        default: true
 
 env:
   IMAGE_NAME: ghcr.io/mvslovers/hercules
@@ -28,16 +36,38 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v4
+        if: inputs.push
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build amd64
+      # --- push path: build + push by digest (no tag) ---
+      - name: Build amd64 (push by digest)
+        id: build
+        if: inputs.push
+        uses: docker/build-push-action@v7
+        with:
+          context: ./hercules
+          platforms: linux/amd64
+          build-args: |
+            HERCULES_REF=${{ inputs.ref }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Test amd64 (pushed digest)
+        if: inputs.push
+        run: docker run --rm ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }} hercules --version
+
+      # --- no-push path (PR validation): build + load + test locally ---
+      - name: Build amd64 (load)
+        if: ${{ ! inputs.push }}
         uses: docker/build-push-action@v7
         with:
           context: ./hercules
@@ -47,30 +77,45 @@ jobs:
             HERCULES_REF=${{ inputs.ref }}
           tags: hercules:test-amd64
 
-      - name: Test amd64 image
-        run: |
-          docker run --rm hercules:test-amd64 hercules --version
-
-      - name: Push amd64 image
-        run: |
-          docker tag hercules:test-amd64 ${{ env.IMAGE_NAME }}:${{ inputs.version }}-amd64
-          docker push ${{ env.IMAGE_NAME }}:${{ inputs.version }}-amd64
+      - name: Test amd64 (local)
+        if: ${{ ! inputs.push }}
+        run: docker run --rm hercules:test-amd64 hercules --version
 
   build-arm64:
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v4
+        if: inputs.push
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build arm64
+      - name: Build arm64 (push by digest)
+        id: build
+        if: inputs.push
+        uses: docker/build-push-action@v7
+        with:
+          context: ./hercules
+          platforms: linux/arm64
+          build-args: |
+            HERCULES_REF=${{ inputs.ref }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Test arm64 (pushed digest)
+        if: inputs.push
+        run: docker run --rm ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }} hercules --version
+
+      - name: Build arm64 (load)
+        if: ${{ ! inputs.push }}
         uses: docker/build-push-action@v7
         with:
           context: ./hercules
@@ -80,19 +125,15 @@ jobs:
             HERCULES_REF=${{ inputs.ref }}
           tags: hercules:test-arm64
 
-      - name: Test arm64 image
-        run: |
-          docker run --rm hercules:test-arm64 hercules --version
-
-      - name: Push arm64 image
-        run: |
-          docker tag hercules:test-arm64 ${{ env.IMAGE_NAME }}:${{ inputs.version }}-arm64
-          docker push ${{ env.IMAGE_NAME }}:${{ inputs.version }}-arm64
+      - name: Test arm64 (local)
+        if: ${{ ! inputs.push }}
+        run: docker run --rm hercules:test-arm64 hercules --version
 
   manifest:
     needs:
       - build-amd64
       - build-arm64
+    if: inputs.push
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -104,12 +145,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create version manifest
+      - name: Create manifest from digests
         run: |
           docker buildx imagetools create \
             -t ${{ env.IMAGE_NAME }}:${{ inputs.version }} \
-            ${{ env.IMAGE_NAME }}:${{ inputs.version }}-amd64 \
-            ${{ env.IMAGE_NAME }}:${{ inputs.version }}-arm64
+            ${{ env.IMAGE_NAME }}@${{ needs.build-amd64.outputs.digest }} \
+            ${{ env.IMAGE_NAME }}@${{ needs.build-arm64.outputs.digest }}
 
       - name: Inspect manifest
         run: |
