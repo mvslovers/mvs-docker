@@ -73,6 +73,11 @@ RUN apt-get update && \
 
 COPY --from=builder /usr/local /usr/local
 
+# hercules-helper installs Regina REXX to /usr/lib (configure --libdir=/usr/lib),
+# outside the copied /usr/local. Bring its library along so Hercules can dlopen
+# libregina.so at runtime for REXX automation.
+COPY --from=builder /usr/lib/libregina* /usr/lib/
+
 RUN echo "/usr/local/lib" > /etc/ld.so.conf.d/hercules.conf && \
   ldconfig
 
