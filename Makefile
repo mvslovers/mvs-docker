@@ -15,10 +15,14 @@ test-mvsce-builder:
 	docker run -d --name mvsce-test \
 	  -p 3270:3270 -p 3505:3505 -p 3506:3506 -p 8080:8080 -p 8888:8888 \
 	  $(REGISTRY)/mvsce-builder:$(TAG)
-	@echo "Waiting for MVS IPL..."
-	@sleep 15
-	curl -sf -u IBMUSER:SYS1 http://localhost:8080/zosmf/info
-	docker stop mvsce-test && docker rm mvsce-test
+	@echo "Waiting for MVS IPL and HTTPD..."
+	@rc=1; for i in $$(seq 1 60); do \
+	  if curl -sf -u IBMUSER:SYS1 'http://localhost:8080/zosmf/test?fn=version'; then rc=0; break; fi; \
+	  sleep 5; \
+	done; \
+	[ $$rc -eq 0 ] || docker logs --tail 50 mvsce-test; \
+	docker stop mvsce-test >/dev/null; docker rm mvsce-test >/dev/null; \
+	exit $$rc
 
 clean-mvsce-builder:
 	docker rmi $(REGISTRY)/mvsce-builder:$(TAG) || true
