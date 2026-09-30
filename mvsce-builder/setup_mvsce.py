@@ -31,6 +31,7 @@ Run from /MVSCE with the DASDs at DASD/*.
 import base64
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -163,14 +164,31 @@ def submit_ebcdic(data):
         sock.sendall(data)
 
 
-def run_job(herc, name, submit):
-    """Submit a job and wait for its $HASP395."""
+def run_job(herc, name, submit, steps):
+    """Submit a job, wait for its $HASP395 and check every step's CC.
+
+    $HASP395 only says the job ended. Each step that ran writes an IEFACTRT
+    line ending in '/<cc>/<jobname>'; a step bypassed by COND writes none.
+    So each of the given steps must appear, and each with CC 00000.
+    """
     since = len(read_log())
     submit()
     if not wait_for_string(f'$HASP395 {name}', JOB_TIMEOUT, since):
         fail(herc, f'job {name} did not complete')
-    log(f'  {name} ended')
     time.sleep(2)
+    pat = re.compile(r'IEFACTRT (\S+)\s*/[^/]*/[^/]*/[^/]*/([^/]+)/'
+                     + re.escape(name) + r'\s*$')
+    ccs = {}
+    for line in read_log()[since:].splitlines():
+        m = pat.search(line)
+        if m:
+            ccs[m.group(1)] = m.group(2).strip()
+    for step in steps:
+        if step not in ccs:
+            fail(herc, f'job {name} step {step} did not run')
+        if ccs[step] != '00000':
+            fail(herc, f'job {name} step {step} ended CC {ccs[step]}')
+    log(f'  {name} ended, ' + ', '.join(f'{s} {ccs[s]}' for s in steps))
 
 
 def brexx_job(name, title, rexx):
@@ -216,7 +234,8 @@ def install_modules(herc, xmit, name, target):
   COPY OUTDD=OUT,INDD=((IN,R))
 /*
 """
-    run_job(herc, name, lambda: submit_ebcdic(cards(head) + data + cards(tail)))
+    run_job(herc, name, lambda: submit_ebcdic(cards(head) + data + cards(tail)),
+            ['RECV', 'COPY'])
 
 
 def write_httpprm0(herc):
@@ -230,7 +249,7 @@ def write_httpprm0(herc):
 //SYSPRINT DD SYSOUT=*
 //SYSIN    DD DUMMY
 """
-    run_job(herc, 'HTTPPRM', lambda: submit_ascii(jcl))
+    run_job(herc, 'HTTPPRM', lambda: submit_ascii(jcl), ['WRITE'])
 
 
 def add_autostart(herc):
@@ -257,12 +276,14 @@ END
 EXIT 0
 """
     run_job(herc, 'AUTOSTRT',
-            lambda: submit_ascii(brexx_job('AUTOSTRT', 'AUTOSTART', rexx)))
+            lambda: submit_ascii(brexx_job('AUTOSTRT', 'AUTOSTART', rexx)),
+            ['REXX'])
 
 
 def console(herc, name, *commands):
     rexx = 'ADDRESS CONSOLE\n' + '\n'.join(f"'{c}'" for c in commands)
-    run_job(herc, name, lambda: submit_ascii(brexx_job(name, name, rexx)))
+    run_job(herc, name, lambda: submit_ascii(brexx_job(name, name, rexx)),
+            ['REXX'])
 
 
 def start_stc(herc, name, msgid, expected):
