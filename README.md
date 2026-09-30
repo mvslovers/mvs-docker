@@ -13,7 +13,7 @@ top of it.
 |-------|---------|--------|
 | [`hercules`](#hercules) | SDL-Hyperion S/370 emulator — base image | published, multi-arch |
 | [`mvs-dev`](#mvs-dev) | Headless development container | published, amd64 |
-| [`mvsce-builder`](#mvsce-builder) | MVS/CE + HTTPD + mvsMF for CI | published, outdated |
+| [`mvsce-builder`](#mvsce-builder) | MVS/CE + UFSD + HTTPD + mvsMF for CI | published, amd64 |
 | `mvstk4-test` / `mvstk5-test` / `mvsce-test` | Test images | planned |
 
 All images are published to `ghcr.io/mvslovers/<name>` and are public.
@@ -22,9 +22,8 @@ All images are published to `ghcr.io/mvslovers/<name>` and are public.
 > `mvs-dev` is built by CI and reproducible, but `amd64`-only for now — its
 > `c2asm370` cross-compiler has no native arm64 build yet. It does **not** use
 > the `hercules` base image (it is a toolchain that talks to a *remote* MVS, not
-> an MVS runtime). `mvsce-builder` is still the outdated one: built locally with
-> `make`, `amd64`-only, and slated to be reworked onto the `hercules` base,
-> multi-arch, and GitHub Actions.
+> an MVS runtime). `mvsce-builder` is still built locally with `make`,
+> `amd64`-only (its base image is), and slated to move to GitHub Actions.
 
 ---
 
@@ -269,7 +268,8 @@ with MVS via the mvsMF REST API.
 ## mvsce-builder
 
 Build image for CI pipelines. Contains a fully operational MVS/CE system
-with HTTPD and mvsMF (z/OSMF-compatible REST API) pre-installed.
+with UFSD, HTTPD and mvsMF (z/OSMF-compatible REST API) installed and
+started at IPL.
 
 **Image:** `ghcr.io/mvslovers/mvsce-builder` (public)
 
@@ -278,17 +278,45 @@ Use cases:
 - Upload sources, submit JCL, poll results via REST API
 - Generate XMIT distribution files
 
+### What's inside
+
+| Component | Version | Where |
+|-----------|---------|-------|
+| [MVS/CE](https://github.com/MVS-sysgen/sysgen) (`mainframed767/mvsce`) | 3.0.0 | base image |
+| [UFSD](https://github.com/mvslovers/ufsd) | 1.3.0 | `MVSLOVER.UFSD.LOADLIB` |
+| [HTTPD](https://github.com/mvslovers/httpd) | 4.1.0 | `HTTPD.LINKLIB` |
+| [mvsMF](https://github.com/mvslovers/mvsmf) | 1.1.0 | `HTTPD.LINKLIB` |
+
+The versions are `ARG`s in `mvsce-builder/Dockerfile`
+(`MVSCE_VERSION`, `UFSD_VERSION`, `HTTPD_VERSION`, `MVSMF_VERSION`) and are
+recorded as image labels (`io.mvslovers.<component>.version`).
+
+MVS/CE 3.0.0 already installs UFSD, HTTPD and mvsMF through MVP, but does not
+start them, and its MVP packages predate fixes mvsMF depends on (e.g. listing
+the spool of a job with many steps,
+[mvsmf#374](https://github.com/mvslovers/mvsmf/issues/374)). The build keeps
+everything MVP set up (procedures, `UFSDPRM0`, the UFS disks) and only:
+
+- replaces the modules in the two load libraries with the pinned releases,
+- writes `SYS2.PARMLIB(HTTPPRM0)` with the z/OSMF routes as mvsMF documents
+  them (`/zosmf/*` is `AUTH=TOKEN`),
+- adds `S UFSD` / `S HTTPD` to `SYS1.PARMLIB(COMMND00)`.
+
+It then starts both and **fails unless** the `UFSD000I`/`HTTPD000I` banners and
+`/zosmf/test?fn=version` report the pinned versions, so a build that installed
+nothing cannot be published as the new level.
+
 ### Usage
 
 ```bash
 docker pull ghcr.io/mvslovers/mvsce-builder
 
 docker run -d --name mvs-build \
-  -p 3270:3270 -p 3505:3505 -p 3506:3506 -p 1080:1080 -p 8888:8888 \
+  -p 3270:3270 -p 3505:3505 -p 3506:3506 -p 8080:8080 -p 8888:8888 \
   ghcr.io/mvslovers/mvsce-builder
 
-# Wait for MVS to IPL (~15s), then verify mvsMF is running
-curl -u IBMUSER:SYS1 http://localhost:1080/zosmf/info
+# Wait for MVS to IPL and HTTPD to come up, then check the mvsMF level
+curl -u IBMUSER:SYS1 'http://localhost:8080/zosmf/test?fn=version'
 ```
 
 ### mvstk4-test / mvstk5-test / mvsce-test (planned)
@@ -335,7 +363,7 @@ make clean
 | 3270 | TN3270 (terminal access) |
 | 3505 | JES2 ASCII socket reader |
 | 3506 | JES2 EBCDIC card reader |
-| 1080 | HTTPD + mvsMF REST API |
+| 8080 | HTTPD + mvsMF REST API |
 | 8888 | Hercules web console |
 
 ## Repository Structure
@@ -344,7 +372,7 @@ make clean
 mvs-docker/
 ├── hercules/          hercules image (SDL-Hyperion emulator, base image)
 ├── mvs-dev/           mvs-dev image (headless development container)
-├── mvsce-builder/     mvsce-builder image (MVS/CE + HTTPD + mvsMF)
+├── mvsce-builder/     mvsce-builder image (MVS/CE + UFSD + HTTPD + mvsMF)
 ├── mvstk4-test/       TK4- test image (planned)
 ├── mvstk5-test/       TK5 test image (planned)
 ├── mvsce-test/        MVS/CE test image (planned)

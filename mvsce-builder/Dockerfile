@@ -1,32 +1,42 @@
-FROM mainframed767/mvsce:latest
+# mvsce-builder: MVS/CE with current UFSD, HTTPD and mvsMF releases.
+#
+# MVS/CE 3.0.0 already installs UFSD, HTTPD and mvsMF through MVP (not
+# started), including the STC procedures, the parmlib members and the UFS
+# disks. Those MVP packages date from July 2026, before the libc370 spool
+# walk fixes (libc370 #28, #126) that mvsMF needs for jobs with many SYSOUT
+# data sets (mvslovers/mvsmf#374). This image replaces the contents of the
+# three load libraries with the pinned releases below and turns on autostart.
+#
+# Bump a version by changing its ARG; nothing else refers to it.
+
+ARG MVSCE_VERSION=3.0.0
+FROM mainframed767/mvsce:${MVSCE_VERSION}
+
+ARG MVSCE_VERSION
+ARG UFSD_VERSION=1.3.0
+ARG HTTPD_VERSION=4.1.0
+ARG MVSMF_VERSION=1.1.0
 
 USER root
 
-# Download UFSD load modules from GitHub release
-ADD https://github.com/mvslovers/ufsd/releases/download/v1.0.0-dev/ufsd-1.0.0-dev-load.tar.gz /tmp/ufsd-load.tar.gz
-RUN cd /tmp && tar xzf ufsd-load.tar.gz \
-    && mv ufsd-1.0.0-dev/mvs/ufsd-1.0.0-dev-syslmod.xmit ufsd.xmit \
-    && rm -rf ufsd-1.0.0-dev ufsd-load.tar.gz
+ADD https://github.com/mvslovers/ufsd/releases/download/v${UFSD_VERSION}/ufsd-${UFSD_VERSION}-load.xmit /tmp/ufsd.xmit
+ADD https://github.com/mvslovers/httpd/releases/download/v${HTTPD_VERSION}/httpd-${HTTPD_VERSION}-load.xmit /tmp/httpd.xmit
+ADD https://github.com/mvslovers/mvsmf/releases/download/v${MVSMF_VERSION}/mvsmf-${MVSMF_VERSION}-load.xmit /tmp/mvsmf.xmit
 
-# Download HTTPD 4.x assets from GitHub release
-ADD https://github.com/mvslovers/httpd/releases/download/v4.0.0-dev/httpd-4.0.0-dev-syslmod.xmit /tmp/httpd.xmit
-ADD https://github.com/mvslovers/httpd/releases/download/v4.0.0-dev/wwwroot_v3.img /tmp/wwwroot_v3.img
-
-# Download mvsMF XMIT from GitHub release
-ADD https://github.com/mvslovers/mvsmf/releases/download/v1.0.0-dev/mvsmf-1.0.0-dev-syslmod.xmit /tmp/mvsmf.xmit
-
-# Install Go and ufsd-utils
-RUN apt-get update && apt-get install -y --no-install-recommends golang-go \
-    && GOBIN=/usr/local/bin go install github.com/mvslovers/ufsd-utils/cmd/ufsd-utils@latest \
-    && apt-get purge -y golang-go && apt-get autoremove -y \
-    && rm -rf /var/lib/apt/lists/* /root/go
-
-# Copy setup script
 COPY setup_mvsce.py /tmp/setup_mvsce.py
 
-# Run setup: starts Hercules, IPLs MVS, installs components,
-# shuts down. Modified DASDs at /MVSCE/DASD/ are baked into this layer.
-# (The VOLUME declaration on /dasd is irrelevant - we work with /MVSCE/DASD/)
-RUN cd /MVSCE && python3 -u /tmp/setup_mvsce.py
+# Starts Hercules, IPLs MVS, installs the modules, verifies the running
+# mvsMF level and shuts down. The modified DASDs under /MVSCE/DASD/ are baked
+# into this layer; the base image's entrypoint copies them to /dasd.
+RUN cd /MVSCE && UFSD_VERSION=${UFSD_VERSION} HTTPD_VERSION=${HTTPD_VERSION} \
+    MVSMF_VERSION=${MVSMF_VERSION} python3 -u /tmp/setup_mvsce.py \
+    && rm -f /tmp/ufsd.xmit /tmp/httpd.xmit /tmp/mvsmf.xmit /tmp/setup_mvsce.py
+
+LABEL org.opencontainers.image.source="https://github.com/mvslovers/mvs-docker" \
+      org.opencontainers.image.description="MVS/CE ${MVSCE_VERSION} with UFSD ${UFSD_VERSION}, HTTPD ${HTTPD_VERSION} and mvsMF ${MVSMF_VERSION}" \
+      io.mvslovers.mvsce.version="${MVSCE_VERSION}" \
+      io.mvslovers.ufsd.version="${UFSD_VERSION}" \
+      io.mvslovers.httpd.version="${HTTPD_VERSION}" \
+      io.mvslovers.mvsmf.version="${MVSMF_VERSION}"
 
 EXPOSE 3270 3505 3506 8080 8888
