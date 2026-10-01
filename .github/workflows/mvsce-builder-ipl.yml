@@ -1,0 +1,96 @@
+name: mvsce-builder IPL sample
+run-name: mvsce-builder IPL sample (${{ inputs.image }})
+
+# Starts the mvsce-builder container on a dozen runners and records, per
+# start, whether mvsMF came up, how Hercules ended and on which host CPU.
+# Diagnostic for mvslovers/brexx370#277, where about half of all starts
+# never answer on port 8080.
+#
+# The entrypoint is mounted from this checkout, so an image published before
+# entrypoint.sh existed is measured as it is, only with its logs visible.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Image to start
+        default: ghcr.io/mvslovers/mvsce-builder:latest
+      load_seconds:
+        description: Seconds of full CPU load right after the start (0 = idle), as a build would overlap the IPL
+        default: "90"
+
+permissions:
+  contents: read
+
+jobs:
+  ipl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        run: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Pull image
+        run: |
+          docker pull "${{ inputs.image }}"
+          docker image inspect --format '{{index .RepoDigests 0}}' "${{ inputs.image }}"
+
+      - name: Start container
+        run: |
+          docker run -d --name mvs -p 8080:8080 \
+            -v "$PWD/mvsce-builder/entrypoint.sh:/entrypoint.sh:ro" \
+            --entrypoint /entrypoint.sh \
+            "${{ inputs.image }}"
+          echo "STARTED=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: CPU load
+        if: inputs.load_seconds != '0'
+        run: |
+          for i in $(seq "$(nproc)"); do
+            timeout "${{ inputs.load_seconds }}" sh -c 'while :; do :; done' &
+          done
+          wait || true
+
+      - name: Wait for mvsMF
+        id: wait
+        run: |
+          for i in $(seq 1 300); do
+            if curl -sf -u IBMUSER:SYS1 http://localhost:8080/zosmf/info >/dev/null 2>&1; then
+              echo "result=up" >> "$GITHUB_OUTPUT"
+              echo "mvsMF up $(( $(date +%s) - STARTED ))s after start"
+              exit 0
+            fi
+            state=$(docker inspect -f '{{.State.Status}}' mvs)
+            if [ "$state" != running ]; then
+              echo "result=container-$state" >> "$GITHUB_OUTPUT"
+              echo "container is $state after $(( $(date +%s) - STARTED ))s"
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "result=timeout" >> "$GITHUB_OUTPUT"
+          echo "mvsMF not up after 300s, container still running"
+          exit 1
+
+      - name: Collect evidence
+        if: always()
+        run: |
+          mkdir -p evidence
+          lscpu > evidence/lscpu.txt
+          docker inspect -f 'status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} started={{.State.StartedAt}} finished={{.State.FinishedAt}}' mvs \
+            | tee evidence/state.txt
+          docker logs mvs > evidence/docker.log 2>&1
+          docker cp mvs:/logs evidence/logs || true
+          cpu=$(sed -n 's/^Model name:[[:space:]]*//p' evidence/lscpu.txt)
+          echo "| ${{ matrix.run }} | ${{ steps.wait.outputs.result }} | $cpu | $(cat evidence/state.txt) |" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: ipl-${{ matrix.run }}
+          path: evidence/
