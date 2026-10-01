@@ -32,6 +32,11 @@ RUN cd /MVSCE && UFSD_VERSION=${UFSD_VERSION} HTTPD_VERSION=${HTTPD_VERSION} \
     MVSMF_VERSION=${MVSMF_VERSION} python3 -u /tmp/setup_mvsce.py \
     && rm -f /tmp/ufsd.xmit /tmp/httpd.xmit /tmp/mvsmf.xmit /tmp/setup_mvsce.py
 
+# Wraps the base image's ./mvs.sh so that the Hercules log and the console
+# hardcopy show up in `docker logs` (see entrypoint.sh).
+COPY --chmod=755 entrypoint.sh /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+
 LABEL org.opencontainers.image.source="https://github.com/mvslovers/mvs-docker" \
       org.opencontainers.image.description="MVS/CE ${MVSCE_VERSION} with UFSD ${UFSD_VERSION}, HTTPD ${HTTPD_VERSION} and mvsMF ${MVSMF_VERSION}" \
       io.mvslovers.mvsce.version="${MVSCE_VERSION}" \

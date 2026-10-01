@@ -319,6 +319,17 @@ docker run -d --name mvs-build \
 curl -u IBMUSER:SYS1 'http://localhost:8080/zosmf/test?fn=version'
 ```
 
+`docker logs` carries the Hercules log and the console hardcopy
+(`/logs/hercules.log`, `/logs/mvslog.txt`), preceded by the host CPU and
+followed by `[*] Hercules ended: exit code …` once Hercules quits. A wait
+loop should therefore also stop as soon as the container is no longer
+running, rather than waiting out its timeout.
+
+The `mvsce-builder IPL sample` workflow (manual dispatch) starts the image
+on a dozen runners and reports per start whether mvsMF came up, how
+Hercules ended and on which CPU — the diagnostic for
+[brexx370#277](https://github.com/mvslovers/brexx370/issues/277).
+
 ### mvstk4-test / mvstk5-test / mvsce-test (planned)
 
 Test images based on TK4-, TK5, and MVS/CE for validating builds
