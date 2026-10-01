@@ -42,7 +42,7 @@ jobs:
 
       - name: Start container
         run: |
-          docker run -d --name mvs -p 8080:8080 \
+          docker run -d --name mvs -p 8080:8080 -p 8888:8888 \
             -v "$PWD/mvsce-builder/entrypoint.sh:/entrypoint.sh:ro" \
             --entrypoint /entrypoint.sh \
             "${{ inputs.image }}"
@@ -76,6 +76,22 @@ jobs:
           echo "result=timeout" >> "$GITHUB_OUTPUT"
           echo "mvsMF not up after 300s, container still running"
           exit 1
+
+      # A stall with Hercules still running: ask Hercules (HTTP port 8888,
+      # the base image's default hercules/hercules login) what the CPUs and
+      # devices are doing. Two PSW samples 10 s apart tell a loop from a wait.
+      - name: Hercules state
+        if: always() && steps.wait.outputs.result == 'timeout'
+        run: |
+          mkdir -p evidence
+          H="http://localhost:8888"
+          curl -s -u hercules:hercules "$H/api/v1/cpus" > evidence/cpus-1.json
+          for c in ipending devlist; do
+            curl -s -u hercules:hercules "$H/cgi-bin/tasks/cmd?cmd=$c" > "evidence/cmd-$c.html"
+          done
+          sleep 10
+          curl -s -u hercules:hercules "$H/api/v1/cpus" > evidence/cpus-2.json
+          cat evidence/cpus-1.json evidence/cpus-2.json
 
       - name: Collect evidence
         if: always()
