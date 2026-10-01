@@ -85,12 +85,12 @@ jobs:
         run: |
           mkdir -p evidence
           H="http://localhost:8888"
-          curl -s -u hercules:hercules "$H/api/v1/cpus" > evidence/cpus-1.json
+          curl -s -u hercules:hercules "$H/cgi-bin/api/v1/cpus" > evidence/cpus-1.json
           for c in ipending devlist; do
             curl -s -u hercules:hercules "$H/cgi-bin/tasks/cmd?cmd=$c" > "evidence/cmd-$c.html"
           done
           sleep 10
-          curl -s -u hercules:hercules "$H/api/v1/cpus" > evidence/cpus-2.json
+          curl -s -u hercules:hercules "$H/cgi-bin/api/v1/cpus" > evidence/cpus-2.json
           cat evidence/cpus-1.json evidence/cpus-2.json
 
       - name: Collect evidence
