@@ -1,5 +1,5 @@
 name: mvsce-builder IPL sample
-run-name: mvsce-builder IPL sample (${{ inputs.image }})
+run-name: mvsce-builder IPL sample (${{ inputs.image }}, numcpu=${{ inputs.numcpu || 'default' }})
 
 # Starts the mvsce-builder container on a dozen runners and records, per
 # start, whether mvsMF came up, how Hercules ended and on which host CPU.
@@ -18,6 +18,9 @@ on:
       load_seconds:
         description: Seconds of full CPU load right after the start (0 = idle), as a build would overlap the IPL
         default: "90"
+      numcpu:
+        description: Number of CPUs for Hercules (empty = the image's default, NUMCPU 2)
+        default: ""
 
 permissions:
   contents: read
@@ -42,7 +45,8 @@ jobs:
 
       - name: Start container
         run: |
-          docker run -d --name mvs -p 8080:8080 \
+          docker run -d --name mvs -p 8080:8080 -p 8888:8888 \
+            -e MVSCE_NUMCPU="${{ inputs.numcpu }}" \
             -v "$PWD/mvsce-builder/entrypoint.sh:/entrypoint.sh:ro" \
             --entrypoint /entrypoint.sh \
             "${{ inputs.image }}"
@@ -76,6 +80,22 @@ jobs:
           echo "result=timeout" >> "$GITHUB_OUTPUT"
           echo "mvsMF not up after 300s, container still running"
           exit 1
+
+      # A stall with Hercules still running: ask Hercules (HTTP port 8888,
+      # the base image's default hercules/hercules login) what the CPUs and
+      # devices are doing. Two PSW samples 10 s apart tell a loop from a wait.
+      - name: Hercules state
+        if: always() && steps.wait.outputs.result == 'timeout'
+        run: |
+          mkdir -p evidence
+          H="http://localhost:8888"
+          curl -s -u hercules:hercules "$H/cgi-bin/api/v1/cpus" > evidence/cpus-1.json
+          for c in ipending devlist; do
+            curl -s -u hercules:hercules "$H/cgi-bin/tasks/cmd?cmd=$c" > "evidence/cmd-$c.html"
+          done
+          sleep 10
+          curl -s -u hercules:hercules "$H/cgi-bin/api/v1/cpus" > evidence/cpus-2.json
+          cat evidence/cpus-1.json evidence/cpus-2.json
 
       - name: Collect evidence
         if: always()
