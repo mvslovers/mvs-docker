@@ -1,5 +1,5 @@
 name: mvsce-builder IPL sample
-run-name: mvsce-builder IPL sample (${{ inputs.image }})
+run-name: mvsce-builder IPL sample (${{ inputs.image }}, numcpu=${{ inputs.numcpu || 'default' }})
 
 # Starts the mvsce-builder container on a dozen runners and records, per
 # start, whether mvsMF came up, how Hercules ended and on which host CPU.
@@ -18,6 +18,9 @@ on:
       load_seconds:
         description: Seconds of full CPU load right after the start (0 = idle), as a build would overlap the IPL
         default: "90"
+      numcpu:
+        description: Number of CPUs for Hercules (empty = the image's default, NUMCPU 2)
+        default: ""
 
 permissions:
   contents: read
@@ -43,6 +46,7 @@ jobs:
       - name: Start container
         run: |
           docker run -d --name mvs -p 8080:8080 -p 8888:8888 \
+            -e MVSCE_NUMCPU="${{ inputs.numcpu }}" \
             -v "$PWD/mvsce-builder/entrypoint.sh:/entrypoint.sh:ro" \
             --entrypoint /entrypoint.sh \
             "${{ inputs.image }}"

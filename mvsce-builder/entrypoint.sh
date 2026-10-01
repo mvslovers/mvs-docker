@@ -60,6 +60,13 @@ console_watchdog() {
 
 cd /
 
+# MVSCE_NUMCPU overrides the number of CPUs (MVS/CE ships NUMCPU 2). It
+# acts on the template /mvs.sh copies to /config/local.cnf, so only on a
+# first start, before that copy exists.
+if [ -n "$MVSCE_NUMCPU" ]; then
+    sed -i "s/^NUMCPU .*/NUMCPU    $MVSCE_NUMCPU/" /MVSCE/conf/local.cnf
+fi
+
 rm -f /tmp/hercules.stdin
 mkfifo /tmp/hercules.stdin
 exec 3<>/tmp/hercules.stdin
