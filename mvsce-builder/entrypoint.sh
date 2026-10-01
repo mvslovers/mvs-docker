@@ -25,10 +25,11 @@
 # as a waiter, and HAO answers that very prompt. If the answer is quicker,
 # the wakeup is lost and the read waits forever: 0009 stays busy, both
 # CPUs sit in an enabled wait, the IPL stops right after IEA101A
-# (brexx370#277). Once the read is waiting, the same input goes through,
-# so when the last thing in the log is the input to 0009 and the log has
-# been silent for 15 s, type that input again. Only during the IPL (until
-# TCAS is up) and at most three times.
+# (brexx370#277; fixed upstream by SDL-Hercules-390/hyperion#889, drop
+# this once the base image carries it). Once the read is waiting, the
+# same input goes through, so when the last thing in the log is the input
+# to 0009 and the log has been silent for 15 s, type that input again.
+# Only during the IPL (until TCAS is up) and at most three times.
 console_watchdog() {
     local log=/logs/hercules.log size prev=-1 still=0 kicks=0 line input
     for _ in $(seq 1 600); do
@@ -60,9 +61,10 @@ console_watchdog() {
 
 cd /
 
-# MVSCE_NUMCPU overrides the number of CPUs (MVS/CE ships NUMCPU 2). It
-# acts on the template /mvs.sh copies to /config/local.cnf, so only on a
-# first start, before that copy exists.
+# MVSCE_NUMCPU overrides the number of CPUs (this image sets NUMCPU 1,
+# MVS/CE ships 2; see the Dockerfile). It acts on the template /mvs.sh
+# copies to /config/local.cnf, so only on a first start, before that copy
+# exists.
 if [ -n "$MVSCE_NUMCPU" ]; then
     sed -i "s/^NUMCPU .*/NUMCPU    $MVSCE_NUMCPU/" /MVSCE/conf/local.cnf
 fi

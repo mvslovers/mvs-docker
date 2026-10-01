@@ -23,6 +23,15 @@ ADD https://github.com/mvslovers/ufsd/releases/download/v${UFSD_VERSION}/ufsd-${
 ADD https://github.com/mvslovers/httpd/releases/download/v${HTTPD_VERSION}/httpd-${HTTPD_VERSION}-load.xmit /tmp/httpd.xmit
 ADD https://github.com/mvslovers/mvsmf/releases/download/v${MVSMF_VERSION}/mvsmf-${MVSMF_VERSION}-load.xmit /tmp/mvsmf.xmit
 
+# One CPU instead of MVS/CE's two. With NUMCPU 2 the IPL stalled in 2 of
+# 24 starts in ways that both involve CP01 (stuck right after CP00 reset
+# it by SIGP; CP01 in disabled wait 064 while CP00 spins); with NUMCPU 1,
+# 0 of 24 (mvs-docker runs 36890781934/36890792177 vs 36892915143/
+# 36892926001, brexx370#277). The cause is not known. MVSCE_NUMCPU=2 at
+# run time restores two CPUs.
+RUN sed -i 's/^NUMCPU .*/NUMCPU    1/' /MVSCE/conf/local.cnf \
+    && grep -q '^NUMCPU    1$' /MVSCE/conf/local.cnf
+
 COPY setup_mvsce.py /tmp/setup_mvsce.py
 
 # Starts Hercules, IPLs MVS, installs the modules, verifies the running

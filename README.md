@@ -325,6 +325,10 @@ followed by `[*] Hercules ended: exit code …` once Hercules quits. A wait
 loop should therefore also stop as soon as the container is no longer
 running, rather than waiting out its timeout.
 
+Unlike stock MVS/CE the image runs Hercules with **one CPU** (`NUMCPU 1`):
+with two, the IPL occasionally stalled around the second CPU. Start the
+container with `-e MVSCE_NUMCPU=2` to get two back.
+
 The `mvsce-builder IPL sample` workflow (manual dispatch) starts the image
 on a dozen runners and reports per start whether mvsMF came up, how
 Hercules ended and on which CPU — the diagnostic for
