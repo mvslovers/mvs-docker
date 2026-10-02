@@ -283,9 +283,9 @@ Use cases:
 | Component | Version | Where |
 |-----------|---------|-------|
 | [MVS/CE](https://github.com/MVS-sysgen/sysgen) (`mainframed767/mvsce`) | 3.0.0 | base image |
-| [UFSD](https://github.com/mvslovers/ufsd) | 1.3.0 | `MVSLOVER.UFSD.LOADLIB` |
-| [HTTPD](https://github.com/mvslovers/httpd) | 4.1.0 | `HTTPD.LINKLIB` |
-| [mvsMF](https://github.com/mvslovers/mvsmf) | 1.1.0 | `HTTPD.LINKLIB` |
+| [UFSD](https://github.com/mvslovers/ufsd) | 1.4.0-dev | `MVSLOVER.UFSD.LOADLIB` |
+| [HTTPD](https://github.com/mvslovers/httpd) | 4.2.0-dev | `HTTPD.LINKLIB` |
+| [mvsMF](https://github.com/mvslovers/mvsmf) | 1.2.0-dev | `HTTPD.LINKLIB` |
 
 The versions are `ARG`s in `mvsce-builder/Dockerfile`
 (`MVSCE_VERSION`, `UFSD_VERSION`, `HTTPD_VERSION`, `MVSMF_VERSION`) and are
