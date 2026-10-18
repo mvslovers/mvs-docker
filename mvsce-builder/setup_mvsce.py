@@ -21,7 +21,8 @@ This script:
      replace, into the existing load libraries.
   2. Writes SYS2.PARMLIB(HTTPPRM0) in the form mvsMF documents, and
      SYS2.PROCLIB(FTPD) with the spool DDs FTPD's JES interface needs.
-  3. Adds S UFSD / S HTTPD / S FTPD to SYS1.PARMLIB(COMMND00).
+  3. Adds S UFSD / S HTTPD / S FTPD to SYS1.PARMLIB(COMMND00), and raises
+     domain 1's minimum MPL in SYS1.PARMLIB(IEAIPS00) from 1 to 10.
   4. Sets up RAKF for the two servers that switch identity at startup:
      the users FTPD and HTTPD (group USER, no operations authority), as
      ftpd's docs/FTPD_RAKF_SETUP.md and httpd's docs/installation.md
@@ -375,6 +376,41 @@ EXIT 0
             ['REXX'])
 
 
+def raise_dmn1_mpl(herc):
+    """DMN=1,CNSTR=(1,50,1) -> (10,50,1) in SYS1.PARMLIB(IEAIPS00).
+
+    With a minimum MPL of 1 the SRM keeps swappable domain-1 address
+    spaces (batch and, with no IEAICS, the started tasks) swapped out for
+    about 30 s after the IPL: FTPD sat between FTPD001I READY and its
+    first accept(), SETPFKEY before its first instruction. Measured by
+    ftpd (ftpd#176): SET IPS to a copy with a minimum of 10 released both
+    within a second, re-applying the minimum of 1 did not. Takes effect
+    at the next IPL, i.e. in every container started from the image.
+    """
+    log('Raising domain 1 minimum MPL in SYS1.PARMLIB(IEAIPS00) to 10...')
+    rexx = """
+/* REXX - DMN=1 minimum MPL 1 -> 10, columns after it unchanged */
+ADDRESS TSO
+"ALLOC F(IPS) DA('SYS1.PARMLIB(IEAIPS00)') SHR REUSE"
+"EXECIO * DISKR IPS (STEM LINE. FINIS"
+old = 'DMN=1,CNSTR=(1,50,1) '
+hit = 0
+DO i = 1 TO line.0
+  IF LEFT(line.i, LENGTH(old)) = old THEN DO
+    line.i = 'DMN=1,CNSTR=(10,50,1)' || SUBSTR(line.i, LENGTH(old) + 1)
+    hit = hit + 1
+  END
+END
+IF hit <> 1 THEN EXIT 8
+"EXECIO" line.0 "DISKW IPS (STEM LINE. FINIS"
+"FREE F(IPS)"
+EXIT 0
+"""
+    run_job(herc, 'IPSDMN1',
+            lambda: submit_ascii(brexx_job('IPSDMN1', 'IEAIPS00 DMN1', rexx)),
+            ['REXX'])
+
+
 def setup_rakf(herc):
     """RAKF users for FTPD and HTTPD, and FTPAUTH.
 
@@ -583,6 +619,7 @@ def main():
     write_httpprm0(herc)
     write_ftpd_proc(herc)
     add_autostart(herc)
+    raise_dmn1_mpl(herc)
     ftpd_pw = setup_rakf(herc)
 
     start_stc(herc, 'UFSD', 'UFSD000I', os.environ.get('UFSD_VERSION'))
