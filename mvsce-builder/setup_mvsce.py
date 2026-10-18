@@ -403,7 +403,10 @@ def main():
                        SHUTDOWN_TIMEOUT, since):
         log('MVS quiesced (wait CCC), quitting Hercules')
         herc.stdin.write(b'quit\n')
-        herc.stdin.flush()
+        # Hercules finishes its shutdown, but the process only exits once
+        # stdin reaches EOF (measured with a742398074: 'Hercules terminated'
+        # and then 300 s of nothing until SIGTERM).
+        herc.stdin.close()
     try:
         herc.wait(timeout=SHUTDOWN_TIMEOUT)
         log('Hercules has quit')
