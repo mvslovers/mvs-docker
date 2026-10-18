@@ -201,6 +201,28 @@ def brexx_job(name, title, rexx):
 """
 
 
+def check_hercules(herc, expected):
+    """Check the Hercules that is running against HERCULES_REF.
+
+    The banner reads 'HHC01413I Hercules version <v>-g<sha>'. The DASDs are
+    compressed CCKD, so a build without zlib or bzip2 cannot read them;
+    only the startup lists the features ('HHC01417I With    ZLIB support'),
+    --version does not.
+    """
+    if not wait_for_string('HHC01413I', 60):
+        fail(herc, 'no Hercules version banner (HHC01413I)')
+    time.sleep(3)   # the feature list follows the banner
+    log_text = read_log()
+    banner = next(l for l in log_text.splitlines() if 'HHC01413I' in l)
+    log(f'  {banner.strip()}')
+    m = re.search(r'-g([0-9a-f]{7,})', banner)
+    if expected and not (m and expected.startswith(m.group(1))):
+        fail(herc, f'Hercules is not at {expected}')
+    for feature in ('ZLIB support', 'CCKD BZIP2 support'):
+        if not re.search(r'HHC01417I With\s+' + feature, log_text):
+            fail(herc, f'Hercules was built without {feature}')
+
+
 def install_modules(herc, xmit, name, target):
     """RECEIVE an XMIT into a temporary library, copy it over target."""
     with open(xmit, 'rb') as f:
@@ -333,6 +355,8 @@ def main():
     herc = subprocess.Popen(
         ['hercules', '-f', 'conf/local.cnf', '-r', 'conf/mvsce.rc', '--daemon'],
         stdout=open(LOGFILE, 'w'), stderr=subprocess.STDOUT, cwd='/MVSCE')
+
+    check_hercules(herc, os.environ.get('HERCULES_REF'))
 
     log('Waiting for MVS IPL ($HASP426)...')
     if not wait_for_string('$HASP426'):
