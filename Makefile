@@ -11,8 +11,10 @@ mvsce-builder:
 publish-mvsce-builder: mvsce-builder
 	docker push $(REGISTRY)/mvsce-builder:$(TAG)
 
+# --rm: the image declares six VOLUMEs, and a plain `docker rm` leaves
+# them behind as anonymous volumes on every run.
 test-mvsce-builder:
-	docker run -d --name mvsce-test \
+	docker run -d --rm --name mvsce-test \
 	  -p 3270:3270 -p 3505:3505 -p 3506:3506 -p 8080:8080 -p 8888:8888 \
 	  $(REGISTRY)/mvsce-builder:$(TAG)
 	@echo "Waiting for MVS IPL and HTTPD..."
@@ -21,7 +23,7 @@ test-mvsce-builder:
 	  sleep 5; \
 	done; \
 	[ $$rc -eq 0 ] || docker logs --tail 50 mvsce-test; \
-	docker stop mvsce-test >/dev/null; docker rm mvsce-test >/dev/null; \
+	docker stop mvsce-test >/dev/null; \
 	exit $$rc
 
 clean-mvsce-builder:

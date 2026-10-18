@@ -238,7 +238,7 @@ docker run -it --network mvs-net \
   ghcr.io/mvslovers/mvs-dev
 
 # Inside the container, start mvsce-builder on the same network
-docker run -d --name mvs --network mvs-net \
+docker run -d --rm --name mvs --network mvs-net \
   -p 3270:3270 -p 8888:8888 \
   ghcr.io/mvslovers/mvsce-builder
 
@@ -311,7 +311,7 @@ nothing cannot be published as the new level.
 ```bash
 docker pull ghcr.io/mvslovers/mvsce-builder
 
-docker run -d --name mvs-build \
+docker run -d --rm --name mvs-build \
   -p 3270:3270 -p 3505:3505 -p 3506:3506 -p 8080:8080 -p 8888:8888 \
   ghcr.io/mvslovers/mvsce-builder
 
