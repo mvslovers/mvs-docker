@@ -1,0 +1,156 @@
+name: Build mvsce-builder
+run-name: Build mvsce-builder (${{ github.event_name == 'pull_request' && 'PR, no push' || ':dev' }})
+
+# Builds mvsce-builder natively for amd64 and arm64 (the build IPLs MVS, so
+# no emulation), starts each result and checks what runs in it, then
+# assembles a multi-arch :dev from the two digests. Pull requests build and
+# check only. Promoting :dev to :latest is mvsce-builder-promote.yml.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "mvsce-builder/Dockerfile"
+      - "mvsce-builder/setup_mvsce.py"
+      - "mvsce-builder/entrypoint.sh"
+      - ".github/workflows/mvsce-builder.yml"
+  pull_request:
+    paths:
+      - "mvsce-builder/Dockerfile"
+      - "mvsce-builder/setup_mvsce.py"
+      - "mvsce-builder/entrypoint.sh"
+      - ".github/workflows/mvsce-builder.yml"
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: ghcr.io/mvslovers/mvsce-builder
+  PUSH: ${{ github.event_name != 'pull_request' }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        if: env.PUSH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: push
+        if: env.PUSH == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: ./mvsce-builder
+          platforms: linux/${{ matrix.arch }}
+          provenance: false
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Build (load)
+        if: env.PUSH != 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: ./mvsce-builder
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: mvsce-builder:test
+
+      # Start the image and read back what runs: the Hercules commit and the
+      # mvsMF level must match the labels the build set.
+      - name: Start and check
+        env:
+          IMAGE: ${{ env.PUSH == 'true' && format('{0}@{1}', env.IMAGE_NAME, steps.push.outputs.digest) || 'mvsce-builder:test' }}
+        run: |
+          set -u
+          [ "$PUSH" = true ] && docker pull -q "$IMAGE"
+          label() { docker image inspect --format "{{index .Config.Labels \"$1\"}}" "$IMAGE"; }
+          ref=$(label io.mvslovers.hercules.ref)
+          mvsmf=$(label io.mvslovers.mvsmf.version)
+          echo "labels: hercules.ref=$ref mvsmf=$mvsmf"
+          docker run -d --rm --name mvs -p 8080:8080 "$IMAGE"
+          start=$(date +%s)
+          for i in $(seq 1 180); do
+            v=$(curl -s -u IBMUSER:SYS1 'http://localhost:8080/zosmf/test?fn=version' || true)
+            case "$v" in *'"version"'*) break ;; esac
+            if [ "$(docker inspect -f '{{.State.Status}}' mvs 2>/dev/null)" != running ]; then
+              echo "container stopped"; exit 1
+            fi
+            sleep 1
+          done
+          echo "after $(( $(date +%s) - start ))s: $v"
+          # from the log file itself: `docker logs` follows it with tail -F
+          # and can lag behind (seen on arm64: empty 2 s after the start)
+          for i in $(seq 1 30); do
+            banner=$(docker exec mvs grep -m 1 HHC01413I /logs/hercules.log || true)
+            [ -n "$banner" ] && break
+            sleep 1
+          done
+          echo "$banner"
+          docker exec mvs grep -E 'UFSD000I|HTTPD000I|FTPD000I' /logs/hercules.log | head -n 3
+          sha=$(echo "$banner" | sed -n 's/.*-g\([0-9a-f]\{7,\}\).*/\1/p')
+          case "$ref" in "$sha"*) [ -n "$sha" ] ;; *) echo "Hercules g$sha, label $ref"; exit 1 ;; esac
+          case "$v" in *"\"version\": \"$mvsmf\""*) ;; *) echo "mvsMF does not report $mvsmf"; exit 1 ;; esac
+          docker stop mvs >/dev/null
+
+      - name: Record digest
+        if: env.PUSH == 'true'
+        run: |
+          # artifact file names may not contain ':', so without "sha256:"
+          mkdir -p digests
+          d="${{ steps.push.outputs.digest }}"
+          touch "digests/${d#sha256:}"
+          ls digests
+
+      - uses: actions/upload-artifact@v6
+        if: env.PUSH == 'true'
+        with:
+          name: digest-${{ matrix.arch }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  manifest:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          path: digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create :dev from the two digests
+        working-directory: digests
+        run: |
+          ls
+          [ "$(ls | wc -l)" -eq 2 ] || { echo "expected two digests"; exit 1; }
+          docker buildx imagetools create -t ${{ env.IMAGE_NAME }}:dev \
+            $(for d in *; do echo "${{ env.IMAGE_NAME }}@sha256:$d"; done)
+          docker buildx imagetools inspect ${{ env.IMAGE_NAME }}:dev

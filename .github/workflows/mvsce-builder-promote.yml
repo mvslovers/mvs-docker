@@ -1,0 +1,55 @@
+name: Promote mvsce-builder
+run-name: Promote mvsce-builder ${{ inputs.from }} to latest
+
+# Makes :latest the image currently tagged :dev (after the IPL sample has
+# been run against :dev). The previous :latest stays reachable under the
+# date of the promotion, with -2, -3 ... if that date is taken already.
+
+on:
+  workflow_dispatch:
+    inputs:
+      from:
+        description: Tag or digest (sha256:...) to promote, the one the IPL sample ran against
+        default: dev
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/mvslovers/mvsce-builder
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Keep the previous latest under a dated tag
+        run: |
+          ref() { case "$1" in sha256:*) echo "$IMAGE_NAME@$1" ;; *) echo "$IMAGE_NAME:$1" ;; esac; }
+          digest() { docker buildx imagetools inspect "$(ref "$1")" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"'; }
+          from=$(digest "${{ inputs.from }}")
+          latest=$(digest latest)
+          [ -n "$from" ] || { echo "no $IMAGE_NAME:${{ inputs.from }}"; exit 1; }
+          echo "from=$from latest=$latest"
+          if [ "$from" = "$latest" ]; then
+            echo "latest is ${{ inputs.from }} already"; exit 0
+          fi
+          tag=$(date -u +%Y%m%d); n=1
+          while [ -n "$(digest "$tag")" ]; do n=$((n + 1)); tag=$(date -u +%Y%m%d)-$n; done
+          docker buildx imagetools create -t "$IMAGE_NAME:$tag" "$IMAGE_NAME@$latest"
+          echo "previous latest kept as :$tag"
+
+      - name: Promote
+        run: |
+          case "${{ inputs.from }}" in
+            sha256:*) src="$IMAGE_NAME@${{ inputs.from }}" ;;
+            *) src="$IMAGE_NAME:${{ inputs.from }}" ;;
+          esac
+          docker buildx imagetools create -t "$IMAGE_NAME:latest" "$src"
+          docker buildx imagetools inspect "$IMAGE_NAME:latest"
