@@ -1,5 +1,5 @@
 name: mvsce-builder IPL sample
-run-name: mvsce-builder IPL sample (${{ inputs.image }}, numcpu=${{ inputs.numcpu || 'default' }})
+run-name: mvsce-builder IPL sample (${{ inputs.image }}, ${{ inputs.runner }}, numcpu=${{ inputs.numcpu || 'default' }})
 
 # Starts the mvsce-builder container on a dozen runners and records, per
 # start, whether mvsMF came up, how Hercules ended and on which host CPU.
@@ -19,15 +19,18 @@ on:
         description: Seconds of full CPU load right after the start (0 = idle), as a build would overlap the IPL
         default: "90"
       numcpu:
-        description: Number of CPUs for Hercules (empty = the image's default, NUMCPU 2)
+        description: Number of CPUs for Hercules (empty = the image's default, NUMCPU 1)
         default: ""
+      runner:
+        description: Runner (ubuntu-latest = amd64, ubuntu-24.04-arm = arm64)
+        default: ubuntu-latest
 
 permissions:
   contents: read
 
 jobs:
   ipl:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
 
     strategy:
