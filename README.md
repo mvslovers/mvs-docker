@@ -319,18 +319,20 @@ only:
   them (`/zosmf/*` is `AUTH=TOKEN`),
 - rewrites `SYS2.PROCLIB(FTPD)` with the `HASPACE1` DD that FTPD's JES
   interface needs (MVP's procedure has only `HASPCKPT`),
-- sets up RAKF for FTPD as
+- sets up RAKF for the two servers that drop from `STC` to an identity of
+  their own at startup, as
   [FTPD_RAKF_SETUP.md](https://github.com/mvslovers/ftpd/blob/v1.2.0/docs/FTPD_RAKF_SETUP.md)
-  describes: the user `FTPD` (group `USER`, no operations authority, a
-  random password nobody keeps) and the facility `FTPAUTH`, granted to the
-  `ADMIN` group only, so `IBMUSER` and `MVSCE01` may use FTP while
-  `MVSCE02` and `FTPD` itself get `530 Not authorized for FTP access`,
+  and httpd's `docs/installation.md` (section 8) describe: the users `FTPD`
+  and `HTTPD` (group `USER`, no operations authority, random passwords
+  nobody keeps) and the facility `FTPAUTH`, granted to the `ADMIN` group
+  only, so `IBMUSER` and `MVSCE01` may use FTP while `MVSCE02` and `FTPD`
+  itself get `530 Not authorized for FTP access`,
 - adds `S UFSD` / `S HTTPD` / `S FTPD` to `SYS1.PARMLIB(COMMND00)`.
 
 It then starts all three and **fails unless** the `UFSD000I`/`HTTPD000I`/
 `FTPD000I` banners and `/zosmf/test?fn=version` report the pinned versions,
-FTPD reports `FTPD004I STC IDENTITY SET TO FTPD/USER` without `RAKF0004` or
-`FTPD004W`, `FTPD001I READY` follows, an FTP login as `IBMUSER` succeeds and
+neither server logs `RAKF0004`, `HTTPD004W` or `FTPD004W`, HTTPD logs
+`HTTPD002I AUTHORIZED BY`, FTPD `FTPD004I STC IDENTITY SET TO FTPD/USER`, `FTPD001I READY` follows, an FTP login as `IBMUSER` succeeds and
 one as `FTPD` is refused, so a build that installed nothing cannot be
 published as the new level. The build jobs print to `printers/prt00e.txt`
 (MSGCLASS A); a failed build shows its tail, a good one empties it.

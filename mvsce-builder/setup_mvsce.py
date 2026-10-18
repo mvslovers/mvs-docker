@@ -22,12 +22,14 @@ This script:
   2. Writes SYS2.PARMLIB(HTTPPRM0) in the form mvsMF documents, and
      SYS2.PROCLIB(FTPD) with the spool DDs FTPD's JES interface needs.
   3. Adds S UFSD / S HTTPD / S FTPD to SYS1.PARMLIB(COMMND00).
-  4. Sets up RAKF for FTPD as ftpd's docs/FTPD_RAKF_SETUP.md describes:
-     the FTPD user (group USER, no operations authority) and the FTPAUTH
-     facility, which only the ADMIN group may use.
+  4. Sets up RAKF for the two servers that switch identity at startup:
+     the users FTPD and HTTPD (group USER, no operations authority), as
+     ftpd's docs/FTPD_RAKF_SETUP.md and httpd's docs/installation.md
+     describe, and the FTPAUTH facility, which only ADMIN may use.
   5. Starts all three and checks what is actually running: the UFSD000I,
      HTTPD000I and FTPD000I banners against UFSD_VERSION / HTTPD_VERSION /
-     FTPD_VERSION, FTPD004I (FTPD runs as FTPD/USER, not as STC),
+     FTPD_VERSION, no RAKF0004 / HTTPD004W / FTPD004W for either server,
+     FTPD004I (FTPD runs as FTPD/USER, not as STC),
      FTPD001I READY, an FTP login, FTPAUTH refusing the FTPD user, and
      /zosmf/test?fn=version against MVSMF_VERSION.
      A build that installed nothing therefore fails instead of publishing
@@ -373,33 +375,42 @@ EXIT 0
             ['REXX'])
 
 
-def setup_rakf_ftpd(herc):
-    """RAKF for FTPD, as ftpd's docs/FTPD_RAKF_SETUP.md describes.
+def setup_rakf(herc):
+    """RAKF users for FTPD and HTTPD, and FTPAUTH.
+
+    Both servers drop from STC (operations authority) to their own user in
+    group USER at startup; without that user RAKF answers RAKF0004 and the
+    server keeps running as STC (FTPD004W / HTTPD004W). ftpd's
+    docs/FTPD_RAKF_SETUP.md and httpd's docs/installation.md (section 8).
 
     MVS/CE runs RAKF 2: users are added with ADDUSER (the password goes to
     SYS1.SECURE.SHADOW), profiles are edited in SYS1.SECURE.CNTL(PROFILES).
     Both need the RAKFADM group; IBMUSER's default group ADMIN has no
     access to SYS1.SECURE.*.
 
-    FTPD signs on with PASSCHK=NO and never uses the password, so it is
+    Both sign on with PASSCHK=NO and never use the password, so it is
     random and not kept. FTPAUTH is granted to ADMIN only, so the FTPD
-    user itself cannot log in over FTP.
+    user itself cannot log in over FTP. One step per user, so each
+    ADDUSER has a condition code of its own.
     """
-    log('Setting up RAKF for FTPD (user FTPD, facility FTPAUTH)...')
+    log('Setting up RAKF (users FTPD and HTTPD, facility FTPAUTH)...')
     alphabet = string.ascii_uppercase + string.digits
-    pw = (secrets.choice(string.ascii_uppercase)
-          + ''.join(secrets.choice(alphabet) for _ in range(7)))
-    jcl = f"""{jobcard('ADDFTPD', 'ADDUSER FTPD', 'RAKFADM')}
-//ADDUSER  EXEC PGM=IKJEFT01,REGION=4096K
+    pws = {u: secrets.choice(string.ascii_uppercase)
+              + ''.join(secrets.choice(alphabet) for _ in range(7))
+           for u in ('FTPD', 'HTTPD')}
+    steps = ''.join(f"""//ADD{u:<5} EXEC PGM=IKJEFT01,REGION=4096K
 //SYSPRINT DD  SYSOUT=*
 //SYSTERM  DD  SYSOUT=*
 //SYSIN    DD  DUMMY
 //SYSTSPRT DD  SYSOUT=*
 //SYSTSIN  DD  *
- ADDUSER FTPD PASSWORD({pw}) DFLTGRP(USER) NOOPERATIONS
+ ADDUSER {u} PASSWORD({pw}) DFLTGRP(USER) NOOPERATIONS
 /*
-"""
-    run_job(herc, 'ADDFTPD', lambda: submit_ascii(jcl), ['ADDUSER'])
+""" for u, pw in pws.items())
+    jcl = f"""{jobcard('ADDUSERS', 'ADDUSER FTPD HTTPD', 'RAKFADM')}
+{steps}"""
+    run_job(herc, 'ADDUSERS', lambda: submit_ascii(jcl),
+            [f'ADD{u}' for u in pws])
 
     # Ascending order on columns 1-60 with the universal (blank group)
     # line first, or RAKF rejects the whole table.
@@ -438,7 +449,24 @@ EXIT 0
         if not wait_for_string(msg, START_TIMEOUT, since):
             fail(herc, f'RAKF reload: {msg} not seen')
         log(f'  {msg}')
-    return pw
+    return pws['FTPD']
+
+
+def check_identity(herc, name, since, ready):
+    """No RAKF0004 for the server, no <name>004W, and <name>002I present.
+
+    Checked once <ready> has appeared, so the startup lines are all in.
+    """
+    if not wait_for_string(ready, START_TIMEOUT, since):
+        fail(herc, f'{name} not ready ({ready} not seen)')
+    started = read_log()[since:]
+    if f'USER:{name}' in started:
+        fail(herc, f'{name} start reports RAKF0004 for USER:{name}')
+    if f'{name}004W' in started:
+        fail(herc, f'{name} start reports {name}004W')
+    if f'{name}002I AUTHORIZED BY' not in started:
+        fail(herc, f'no {name}002I AUTHORIZED BY line')
+    log(f'  {name}: no RAKF0004, no {name}004W, {name}002I present')
 
 
 def console(herc, name, *commands):
@@ -555,10 +583,12 @@ def main():
     write_httpprm0(herc)
     write_ftpd_proc(herc)
     add_autostart(herc)
-    ftpd_pw = setup_rakf_ftpd(herc)
+    ftpd_pw = setup_rakf(herc)
 
     start_stc(herc, 'UFSD', 'UFSD000I', os.environ.get('UFSD_VERSION'))
+    since = len(read_log())
     start_stc(herc, 'HTTPD', 'HTTPD000I', os.environ.get('HTTPD_VERSION'))
+    check_identity(herc, 'HTTPD', since, 'HTTPD001I')
     check_mvsmf(herc, os.environ.get('MVSMF_VERSION'))
     since = len(read_log())
     start_stc(herc, 'FTPD', 'FTPD000I', os.environ.get('FTPD_VERSION'))
