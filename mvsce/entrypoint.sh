@@ -1,5 +1,5 @@
 #!/bin/bash
-# mvsce-builder entrypoint: runs MVS/CE's own /mvs.sh, but makes the
+# mvsce entrypoint: runs MVS/CE's own /mvs.sh, but makes the
 # Hercules log reach `docker logs`.
 #
 # /mvs.sh sends Hercules' stdout to /logs/hercules.log, so `docker logs`

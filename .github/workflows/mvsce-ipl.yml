@@ -1,7 +1,7 @@
-name: mvsce-builder IPL sample
-run-name: mvsce-builder IPL sample (${{ inputs.image }}, ${{ inputs.runner }}, numcpu=${{ inputs.numcpu || 'default' }})
+name: mvsce IPL sample
+run-name: mvsce IPL sample (${{ inputs.image }}, ${{ inputs.runner }}, numcpu=${{ inputs.numcpu || 'default' }})
 
-# Starts the mvsce-builder container on a dozen runners and records, per
+# Starts the mvsce container on a dozen runners and records, per
 # start, whether mvsMF came up, how Hercules ended and on which host CPU.
 # Diagnostic for mvslovers/brexx370#277, where about half of all starts
 # never answer on port 8080.
@@ -14,7 +14,7 @@ on:
     inputs:
       image:
         description: Image to start
-        default: ghcr.io/mvslovers/mvsce-builder:latest
+        default: ghcr.io/mvslovers/mvsce:latest
       load_seconds:
         description: Seconds of full CPU load right after the start (0 = idle), as a build would overlap the IPL
         default: "90"
@@ -50,7 +50,7 @@ jobs:
         run: |
           docker run -d --name mvs -p 8080:8080 -p 8888:8888 \
             -e MVSCE_NUMCPU="${{ inputs.numcpu }}" \
-            -v "$PWD/mvsce-builder/entrypoint.sh:/entrypoint.sh:ro" \
+            -v "$PWD/mvsce/entrypoint.sh:/entrypoint.sh:ro" \
             --entrypoint /entrypoint.sh \
             "${{ inputs.image }}"
           echo "STARTED=$(date +%s)" >> "$GITHUB_ENV"
