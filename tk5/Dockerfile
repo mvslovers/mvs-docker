@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 #
-# tk5: MVS 3.8j TK5 (Rob Prins' turnkey system), as shipped, on the
-# Hercules mvsce runs.
+# tk5: MVS 3.8j TK5 (Rob Prins' turnkey system) in its minimal
+# configuration, with UFSD, HTTPD, mvsMF and FTPD installed with SMP from
+# their release packages (setup_tk5.py), on the Hercules mvsce runs.
 #
 # The system comes from the TK5 download, pinned by checksum. The page
 # publishes no checksum, so TK5_SHA256 is the one this file was written
@@ -23,6 +24,10 @@ ARG TK5_UPDATE=5
 ARG TK5_URL=https://www.prince-webdesign.nl/images/downloads/mvs-tk5.zip
 ARG TK5_SHA256=710d002843631322810a276dd42c793fda458548dc64d86e2914a62db7425f84
 ARG HERCULES_REF=a742398074b24c6e9dfff1e4065a55b69a8a4883
+ARG UFSD_VERSION=1.4.0
+ARG HTTPD_VERSION=4.3.0
+ARG MVSMF_VERSION=1.3.0
+ARG FTPD_VERSION=1.2.0
 
 FROM debian:trixie AS hercules
 
@@ -76,6 +81,10 @@ ARG TK5_UPDATE
 ARG TK5_URL
 ARG TK5_SHA256
 ARG HERCULES_REF
+ARG UFSD_VERSION
+ARG HTTPD_VERSION
+ARG MVSMF_VERSION
+ARG FTPD_VERSION
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -102,27 +111,51 @@ COPY --from=system /tk5 /tk5
 
 # TK5's own settings (conf/tk5.cnf, scripts/*.rc). The ports are the ones
 # mvsce uses, so a client needs no second set: TN3270 3270, Hercules web
-# console 8888 (TK5: 8038), ASCII card reader 3505. REP101A=default on
-# every architecture: TK5's mvs_ipl switches ARM to the IPL reply and
-# device set without the 3705s, for TK5's own ARM Hercules; this image
-# runs the same Hercules everywhere.
+# console 8888 (TK5: 8038), ASCII card reader 3505.
+#
+# TK5's minimal configuration (TK5 Introduction and User Manual, "Start
+# MVS with a minimal configuration"): REP101A=specific, CMD101A=02 make
+# ipl.rc answer IEA101A with R 00,CMD=02, so TCAM (TP), MF1, JRP and
+# SNASOL do not start and the NCPs are not loaded; TSO comes up through
+# VTAM as usual. The image is a test system for our own servers, not a
+# TK5 showcase. REP101A=default at run time gives the full system back.
 ENV HERCULES_RC=scripts/ipl.rc \
     CNSLPORT=3270 \
     HTTPPORT=8888 \
     RDRPORT=3505 \
     NUMCPU=1 \
     MAXCPU=1 \
-    REP101A=default
+    REP101A=specific \
+    CMD101A=02
 
 WORKDIR /tk5
+
+# The release distribution packages, installed with SMP by their own jobs.
+ADD https://github.com/mvslovers/ufsd/releases/download/v${UFSD_VERSION}/ufsd-${UFSD_VERSION}-dist.tar.gz /tmp/dist/
+ADD https://github.com/mvslovers/httpd/releases/download/v${HTTPD_VERSION}/httpd-${HTTPD_VERSION}-dist.tar.gz /tmp/dist/
+ADD https://github.com/mvslovers/mvsmf/releases/download/v${MVSMF_VERSION}/mvsmf-${MVSMF_VERSION}-dist.tar.gz /tmp/dist/
+ADD https://github.com/mvslovers/ftpd/releases/download/v${FTPD_VERSION}/ftpd-${FTPD_VERSION}-dist.tar.gz /tmp/dist/
+COPY setup_tk5.py /tmp/setup_tk5.py
+
+# IPLs TK5, installs and configures the four, checks what runs and shuts
+# TK5 down; the changed DASDs are baked into this layer.
+RUN cd /tmp/dist && for f in *-dist.tar.gz; do tar xzf "$f"; done \
+    && UFSD_VERSION=${UFSD_VERSION} HTTPD_VERSION=${HTTPD_VERSION} \
+       MVSMF_VERSION=${MVSMF_VERSION} FTPD_VERSION=${FTPD_VERSION} \
+       HERCULES_REF=${HERCULES_REF} python3 -u /tmp/setup_tk5.py \
+    && rm -rf /tmp/dist /tmp/setup_tk5.py
 
 COPY --chmod=755 entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 
 LABEL org.opencontainers.image.source="https://github.com/mvslovers/mvs-docker" \
-      org.opencontainers.image.description="MVS 3.8j TK5 Update ${TK5_UPDATE}, Hercules ${HERCULES_REF}" \
+      org.opencontainers.image.description="MVS 3.8j TK5 Update ${TK5_UPDATE} (minimal configuration) with UFSD ${UFSD_VERSION}, HTTPD ${HTTPD_VERSION}, mvsMF ${MVSMF_VERSION} and FTPD ${FTPD_VERSION} installed with SMP, Hercules ${HERCULES_REF}" \
       io.mvslovers.tk5.update="${TK5_UPDATE}" \
       io.mvslovers.tk5.sha256="${TK5_SHA256}" \
-      io.mvslovers.hercules.ref="${HERCULES_REF}"
+      io.mvslovers.hercules.ref="${HERCULES_REF}" \
+      io.mvslovers.ufsd.version="${UFSD_VERSION}" \
+      io.mvslovers.httpd.version="${HTTPD_VERSION}" \
+      io.mvslovers.mvsmf.version="${MVSMF_VERSION}" \
+      io.mvslovers.ftpd.version="${FTPD_VERSION}"
 
-EXPOSE 3270 3505 8888
+EXPOSE 2121 3270 3505 8080 8888
