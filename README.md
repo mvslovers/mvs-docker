@@ -408,6 +408,10 @@ At most three instances run per Docker host (`MVSCE_TARGET_MAX`). Each
 carries the label `io.mvslovers.target=<name>` and runs with `--rm`.
 `MVSCE_TARGET_IMAGE` selects another image, e.g. `:dev`.
 
+The image also runs under Apple's `container` on Apple silicon (arm64,
+natively): `container run -d --rm -p 28080:8080 -p 23270:3270
+ghcr.io/mvslovers/mvsce-builder` answered `fn=version` 3 s after the start.
+
 `docker logs` carries the Hercules log and the console hardcopy
 (`/logs/hercules.log`, `/logs/mvslog.txt`), preceded by the host CPU and
 followed by `[*] Hercules ended: exit code …` once Hercules quits. A wait
