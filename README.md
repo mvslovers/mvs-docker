@@ -434,6 +434,19 @@ instances started in parallel took 7–8 s and moved the host's free memory
 from 19 % to 17 %, but each idle instance used about half a core (218 % of
 one core for four), against 8–10 % per container under Docker on mvsdev.
 
+Under Docker each instance runs with `--cpu-shares 2`, the lowest weight
+(`MVSCE_TARGET_CPU_SHARES`), to lean a contended CPU towards other work
+on the host. That buys less than the weight suggests: with systemd's
+cgroup v2 the containers sit in `system.slice`, while processes started
+from a login or tmux session sit in `user.slice`, and the two slices split
+a contended host half and half whatever the containers' weight. Measured
+on mvsdev (4 cores), three CPU-bound loops in a container against three
+in a login session, 10 s each, two runs: at weight 1024 the container got
+1.82 and 1.83 cores and the session 1.60 and 1.56; at weight 2 the
+container got 1.39 and 1.62 and the session 1.94 and 1.80. So the low
+weight moves 0.2 to 0.45 of a core towards the session; the bulk of the
+protection is the slice split, which needs root to change.
+
 ### Inside the image
 
 - BREXX from `SYS2.LINKLIB` needs a `REGION`: without one the fetch fails
