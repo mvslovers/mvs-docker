@@ -68,28 +68,37 @@ jobs:
           load: true
           tags: tk5:test
 
-      # Start the image and read back what runs: the Hercules commit must
-      # match the label the build set, and TSO has to come up.
+      # Start the image and read back what runs: the Hercules commit and
+      # the mvsMF level must match the labels the build set, TSO has to be
+      # up and FTPD has to greet.
       - name: Start and check
         env:
           IMAGE: ${{ env.PUSH == 'true' && format('{0}@{1}', env.IMAGE_NAME, steps.push.outputs.digest) || 'tk5:test' }}
         run: |
           set -u
           [ "$PUSH" = true ] && docker pull -q "$IMAGE"
-          ref=$(docker image inspect --format '{{index .Config.Labels "io.mvslovers.hercules.ref"}}' "$IMAGE")
-          echo "label: hercules.ref=$ref"
-          docker run -d --rm --name mvs -p 3270:3270 "$IMAGE"
+          label() { docker image inspect --format "{{index .Config.Labels \"$1\"}}" "$IMAGE"; }
+          ref=$(label io.mvslovers.hercules.ref)
+          mvsmf=$(label io.mvslovers.mvsmf.version)
+          echo "labels: hercules.ref=$ref mvsmf=$mvsmf"
+          docker run -d --rm --name mvs -p 8080:8080 -p 2121:2121 "$IMAGE"
           start=$(date +%s)
-          up=
+          v=
           for i in $(seq 1 240); do
-            if docker logs mvs 2>&1 | grep -q 'IKT005I TCAS IS INITIALIZED'; then up=yes; break; fi
+            v=$(curl -s -m 2 -u HERC01:CUL8TR 'http://localhost:8080/zosmf/test?fn=version' || true)
+            case "$v" in *'"version"'*) break ;; esac
             if [ "$(docker inspect -f '{{.State.Status}}' mvs 2>/dev/null)" != running ]; then
               echo "container stopped"; docker logs --tail 50 mvs 2>&1 || true; exit 1
             fi
             sleep 1
           done
-          echo "TSO up after $(( $(date +%s) - start ))s: ${up:-no}"
-          [ -n "$up" ] || { docker logs --tail 50 mvs 2>&1; exit 1; }
+          echo "mvsMF after $(( $(date +%s) - start ))s: $v"
+          case "$v" in *"\"version\": \"$mvsmf\""*) ;; *) docker logs --tail 50 mvs 2>&1; echo "mvsMF does not report $mvsmf"; exit 1 ;; esac
+          greet=$(timeout 30 bash -c 'exec 3<>/dev/tcp/localhost/2121; head -c 3 <&3' || true)
+          echo "FTP greeting after $(( $(date +%s) - start ))s: $greet"
+          [ "$greet" = 220 ] || { echo "FTPD did not greet"; exit 1; }
+          docker logs mvs 2>&1 | grep -q 'IKT005I TCAS IS INITIALIZED' || { echo "TSO not up"; exit 1; }
+          docker logs mvs 2>&1 | grep -E 'UFSD001I|HTTPD001I|FTPD001I|HTTPD004I|FTPD004I'
           banner=$(docker logs mvs 2>&1 | grep -m 1 HHC01413I)
           echo "$banner"
           sha=$(echo "$banner" | sed -n 's/.*-g\([0-9a-f]\{7,\}\).*/\1/p')

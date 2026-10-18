@@ -14,7 +14,7 @@ top of it.
 | [`hercules`](#hercules) | SDL-Hyperion S/370 emulator — base image | published, multi-arch |
 | [`mvs-dev`](#mvs-dev) | Headless development container | published, amd64 |
 | [`mvsce`](#mvsce) | MVS/CE + UFSD + HTTPD + mvsMF + FTPD, for CI and disposable test instances | published, multi-arch |
-| [`tk5`](#tk5) | TK5 as shipped, on the same Hercules; the products follow, installed with SMP | in progress, `:dev` |
+| [`tk5`](#tk5) | TK5 (minimal configuration) + UFSD + HTTPD + mvsMF + FTPD, installed with SMP | in progress, `:dev` |
 
 All images are published to `ghcr.io/mvslovers/<name>` and are public.
 
@@ -480,44 +480,80 @@ Hercules ended and on which CPU — the diagnostic for
 **Image:** `ghcr.io/mvslovers/tk5` (`:dev` only for now)
 
 [TK5](https://www.prince-webdesign.nl/tk5) — Rob Prins' MVS 3.8j turnkey
-system — for what MVS/CE cannot answer: TK5-specific behaviour and SMP
-installs. Planned in three steps:
-
-1. **TK5 as shipped** (this is it now): Update 5 from the official download,
-   pinned by its SHA-256, on Hyperion at the same `HERCULES_REF` as `mvsce`,
-   for `amd64` and `arm64`.
-2. UFSD, HTTPD, mvsMF and FTPD **installed with SMP** from their release
-   packages, each install verified by the member list, and a second IPL
-   so the APF entries take effect. The container then carries a real SMP
-   inventory of the released levels, on which an upgrade to a `-dev` level
-   can be rehearsed.
-3. RAKF users, autostart, `mvsce-target` support.
+system — in its **minimal configuration**, with UFSD, HTTPD, mvsMF and FTPD
+**installed with SMP** from their release packages: for what `mvsce` cannot
+answer, TK5-specific behaviour and SMP installs. The container carries a
+real SMP inventory of the released levels (`TUFS140`, `THTP430`, `TZMF130`,
+`TFTP120`, `REC APP ACC` in both zones), on which an upgrade to a `-dev`
+level, `DELETE` included, can be rehearsed.
 
 | Component | Version | Where |
 |-----------|---------|-------|
-| [TK5](https://www.prince-webdesign.nl/tk5) | Update 5 (2026-02-18) | `/tk5`, as unpacked, without TK5's own Hercules builds and its PDF manuals |
+| [TK5](https://www.prince-webdesign.nl/tk5) | Update 5 (2026-02-18), minimal configuration | `/tk5`, as unpacked, without TK5's own Hercules builds and its PDF manuals |
 | [Hercules](https://github.com/SDL-Hercules-390/hyperion) (SDL-Hyperion, `develop`) | `a742398074` (4.10.0.11783) | `/opt/hercules` |
+| [UFSD](https://github.com/mvslovers/ufsd) | 1.4.0 (`TUFS140`) | `UFSD.LINKLIB` |
+| [HTTPD](https://github.com/mvslovers/httpd) | 4.3.0 (`THTP430`) | `HTTPD.LINKLIB` |
+| [mvsMF](https://github.com/mvslovers/mvsmf) | 1.3.0 (`TZMF130`) | `MVSMF.LINKLIB` |
+| [FTPD](https://github.com/mvslovers/ftpd) | 1.2.0 (`TFTP120`) | `FTPD.LINKLIB` |
 
-The values are `ARG`s in `tk5/Dockerfile` (`TK5_UPDATE`, `TK5_URL`,
-`TK5_SHA256`, `HERCULES_REF`); a new TK5 update is those three. TK5's own
-`conf/`, `scripts/` and `dasd/` stay as shipped: the image sets only the
-variables TK5 itself reads (`CNSLPORT`, `HTTPPORT`, `RDRPORT`, `NUMCPU`, …),
-and IPLs the way TK5's `mvs_ipl` does in daemon mode.
+The values are `ARG`s in `tk5/Dockerfile`; a new TK5 update is `TK5_UPDATE`,
+`TK5_URL` and `TK5_SHA256` (the download page publishes no checksum, so it
+is pinned to the one this image was built from). TK5's own `conf/`,
+`scripts/` and `dasd/` stay as shipped: the image sets only the variables TK5
+itself reads (`CNSLPORT`, `HTTPPORT`, `RDRPORT`, `REP101A`, …) and IPLs the
+way TK5's `mvs_ipl` does in daemon mode.
 
 ```bash
-docker run -d --rm --name tk5 -p 3270:3270 -p 3505:3505 -p 8888:8888 \
+docker run -d --rm --name tk5 -p 2121:2121 -p 3270:3270 -p 8080:8080 \
   ghcr.io/mvslovers/tk5:dev
-docker logs -f tk5        # TSO is up at IKT005I TCAS IS INITIALIZED
+curl -u HERC01:CUL8TR 'http://localhost:8080/zosmf/test?fn=version'
 ```
 
-Ports as in `mvsce`: TN3270 3270, ASCII card reader 3505, Hercules web
-console 8888 (TK5's default is 8038). TK5's users are its own (`HERC01` /
-`CUL8TR` and so on, see TK5's manual).
+**Minimal configuration.** `REP101A=specific`, `CMD101A=02` (TK5 manual,
+"Start MVS with a minimal configuration"): IEA101A is answered with
+`R 00,CMD=02`, so TCAM, MF1, JRP and SNASOL do not start and the NCPs are
+not loaded. `-e REP101A=default` gives the full TK5 back, the servers
+included.
 
-Measured on mvsdev (4 cores, idle): `IKT005I` 45 s after `docker run`.
-About 12 s of that are the pauses in TK5's `scripts/ipl.rc`
-(`IPL_PAUSE`, 4 s each), and 30 s pass between `BSPSETPF ENDED` and
-`DYNAMASK STARTED`; why is not yet established.
+**How the products are installed** (`tk5/setup_tk5.py`, at build time): each
+product's own allocation and SMP install job from its release package, as its
+README describes, with `USER=HERC01` on the job card (RAKF) and the
+libraries on `TSO001`. An install counts only when every module the APPLY
+reports as copied (`HMA2380`) is in the target library's member list. The
+XMITs go in through the card reader, switched to EBCDIC for them (TK5's own
+FTP server, FTPD 1.0.1, refuses every upload). TK5's HTTPD 3.3.0 library is
+renamed to `HTTPD.V3R3M0.LINKLIB` first, as HTTPD 4 creates
+`HTTPD.LINKLIB`.
+
+**The configuration is TK5's way, not MVS/CE's:**
+
+- Procedures `UFSD`, `UFSDCLNP`, `HTTPD` and `FTPD` in `SYS2.PROCLIB`
+  (replacing TK5's HTTPD 3.3.0 and FTPD 1.0.1 ones), from the SAMPLIBs with
+  `D='SYS1.PARMLIB'` (TK5 has no `SYS2.PARMLIB`), the spool DDs on `SPOOL0`,
+  and `MVSMF.LINKLIB` ahead of `HTTPD.LINKLIB` in HTTPD's `STEPLIB`.
+- `HTTPPRM0` and `FTPDPRM0` as shipped, and a `UFSDPRM0` of the image's own
+  in `SYS1.PARMLIB`: `UFSD.ROOT` on `/`, `UFSD.SCRATCH` on `/tmp`,
+  `HERC01.UFSHOME` on `/u/herc01`. No web root: HTTPD's
+  `httpd-webroot.img` goes in by IND$FILE only, so `/` answers 404.
+- RAKF: users `HTTPD` and `FTPD` in group `USER`, as both servers sign on
+  (TK5 ships `FTPD` in group `FTPD` only). TK5's `FACILITY FTPAUTH` stays as
+  shipped: FTP only for `ADMIN` (`HERC01`, `HERC02`, `IBMUSER`).
+- No APF entries: on TK5 the servers authorise themselves through RAKF's
+  SVC 244 (`HTTPD002I AUTHORIZED BY SVC`), as their READMEs describe, so no
+  second IPL.
+- Autostart from TK5's BSPPILOT startup scripts, `SYS1.PARMLIB(STARTMIN)`
+  and `(STARTSTD)`, not `COMMND00`.
+
+Ports as in `mvsce`: mvsMF/HTTPD 8080, FTPD 2121, TN3270 3270, ASCII card
+reader 3505, Hercules web console 8888 (TK5's default is 8038). Users are
+TK5's own: `HERC01`/`CUL8TR` (ADMIN, RAKFADM), `HERC02`/`CUL8TR`,
+`HERC03`/`PASS4U`, `HERC04`/`PASS4U`, `IBMUSER`/`IBMPASS`.
+
+Measured on mvsdev (4 cores, idle): TSO (`IKT005I`) 44 s after `docker run`,
+the servers READY 2 s later, mvsMF answering at 47 s. About 12 s of that are
+the pauses in TK5's `scripts/ipl.rc` (`IPL_PAUSE`, 4 s each), and 30 s are
+TK5's own start timer: JES2's start member `SYS1.JES2PARM(STARTMIN)` is
+`$TA,I=30,'$VS,''F BSPPILOT,SCRIPT=STARTMIN'''`.
 
 ## Build
 
@@ -569,7 +605,7 @@ mvs-docker/
 ├── mvs-dev/           mvs-dev image (headless development container)
 ├── mvsce/             mvsce image (MVS/CE + UFSD + HTTPD + mvsMF + FTPD), mvsce-target
 ├── mvsce-builder/     mvsce-target link at its former path
-├── tk5/               tk5 image (TK5 as shipped; the products follow)
+├── tk5/               tk5 image (TK5, minimal, + UFSD + HTTPD + mvsMF + FTPD via SMP)
 ├── common/            shared scripts and configs
 ├── .github/workflows/ CI: hercules, mvs-dev, mvsce (build, IPL sample, promote)
 ├── Makefile           build/push/test automation (non-hercules images)
