@@ -36,7 +36,9 @@
 # Environment: MVSCE_TARGET_HOST (= --host), MVSCE_TARGET_RUNTIME,
 # MVSCE_TARGET_IMAGE, MVSCE_TARGET_MAX (instances per host, default 3),
 # MVSCE_TARGET_MEMORY / MVSCE_TARGET_CPUS (Apple's container: per VM,
-# default 512M / 2).
+# default 512M / 2), MVSCE_TARGET_CPU_SHARES (Docker: --cpu-shares,
+# default 2, the lowest, which leans a contended CPU towards whatever
+# else runs on the host; the README says by how much).
 
 set -euo pipefail
 
@@ -44,6 +46,7 @@ IMAGE=${MVSCE_TARGET_IMAGE:-ghcr.io/mvslovers/mvsce-builder:latest}
 MAX=${MVSCE_TARGET_MAX:-3}
 VM_MEMORY=${MVSCE_TARGET_MEMORY:-512M}
 VM_CPUS=${MVSCE_TARGET_CPUS:-2}
+CPU_SHARES=${MVSCE_TARGET_CPU_SHARES:-2}
 LABEL=io.mvslovers.target
 MVS_USER=IBMUSER
 MVS_PASS=SYS1
@@ -105,7 +108,7 @@ shift
 # Remote mode: run this very script on the ssh host, under Docker. The
 # address printed for the target is the one this machine reaches it by.
 if [ -n "$host" ] && [ -z "$advertise" ]; then
-    addr=$(ssh -G "$host" | awk '$1 == "hostname" { print $2; exit }')
+    addr=$(ssh -G "$host" 2>/dev/null | awk '$1 == "hostname" { print $2; exit }')
     opts=(--advertise "${addr:-$host}" --wait "$wait_sec" --pull "$pull"
           --older-than "$older")
     for p in $extra; do opts+=(--port "$p"); done
@@ -113,7 +116,7 @@ if [ -n "$host" ] && [ -z "$advertise" ]; then
     [ "$format" = env ] && opts+=(--env)
     exec ssh -T -o BatchMode=yes "$host" \
         MVSCE_TARGET_IMAGE="$IMAGE" MVSCE_TARGET_MAX="$MAX" \
-        MVSCE_TARGET_RUNTIME=docker \
+        MVSCE_TARGET_CPU_SHARES="$CPU_SHARES" MVSCE_TARGET_RUNTIME=docker \
         bash -s -- "$cmd" "$@" "${opts[@]}" < "${BASH_SOURCE[0]}"
 fi
 
@@ -262,7 +265,7 @@ rt_run() {      # $1 name, $2 instance name; labels and ports from globals
     if [ "$runtime" = docker ]; then
         for p in $PORTS; do pub+=(-p "0:${p%%:*}"); done
         for p in $extra; do pub+=(-p "0:$p"); done
-        docker run -d --rm --name "$1" \
+        docker run -d --rm --name "$1" --cpu-shares "$CPU_SHARES" \
             --label "$LABEL=$2" --label "$LABEL.owner=${SUDO_USER:-$(id -un)}" \
             --label "$LABEL.created=$(date +%s)" --label "$LABEL.ports=$extra" \
             "${pub[@]}" "$IMAGE" >/dev/null
