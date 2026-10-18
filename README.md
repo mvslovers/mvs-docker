@@ -354,6 +354,49 @@ RC=28`, because MVS/CE's RAKF has no `FTPD` user; logins still work. Passive
 mode answers with `127,0,0,1` (MVS/CE's `FTPDPRM0`), so data connections work
 inside the container only.
 
+### Disposable test instances: `mvsce-target`
+
+`mvsce-builder/mvsce-target` starts an instance with random host ports,
+waits until mvsMF answers and prints it as an mbt 3 environment target;
+`down` removes it again, volumes included.
+
+```bash
+# on a machine without Docker: run it against the Docker on an ssh host
+eval "$(mvsce-builder/mvsce-target up --host mvsdev)"
+mbt target ping env --tso --wait 60     # TSO is up ~1.5 s after mvsMF
+mbt test --mvs --target env
+mvsce-builder/mvsce-target down "$MVSCE_TARGET_NAME" --host mvsdev
+```
+
+| Command | Does |
+|---------|------|
+| `up [NAME] [--wait SEC] [--pull always\|missing]` | start, wait for the authenticated `fn=version` (default 120 s), print the target; on failure print the log tail and remove the container |
+| `status NAME` | print the target of a running instance |
+| `down NAME` | stop it and check that it is gone |
+| `list` | instances on that Docker host, with age, ports and owner |
+| `reap [--older-than MIN]` | remove instances older than MIN minutes (default 240) |
+
+`--host SSH` (or `MVSCE_TARGET_HOST`) sends the script to that host through
+`ssh HOST bash -s`, so nothing has to be installed there, and prints the
+address `ssh -G` resolves for it. The output is `export` lines by default,
+`.env` lines with `--env`, JSON with `--json`:
+
+| Variable | Value |
+|----------|-------|
+| `MBT_TARGET_MVSMF_URL` | `http://<host>:<port of 8080>` |
+| `MBT_TARGET_MVSMF_USER` / `_PASSWORD` | `IBMUSER` / `SYS1` |
+| `MBT_TARGET_HLQ` | `IBMUSER` |
+| `MBT_TARGET_VOLUME` | `WORK00` |
+| `MBT_TARGET_JOBCLASS` / `_MSGCLASS` | `A` / `H` (held, readable through mvsMF) |
+| `MBT_TARGET_TN3270_HOST` / `_PORT` / `_USER` / `_PASSWORD` | the TN3270 console, `IBMUSER` / `SYS1` |
+| `MBT_TARGET_HERCULES_URL` / `_USER` / `_PASSWORD` | the Hercules web console, `hercules` / `hercules` |
+| `MVSCE_TARGET_NAME`, `_IMAGE`, `_HERCULES_REF` | the instance, the image by digest, the Hercules commit |
+| `MVSCE_TARGET_FTP_PORT`, `_RDR_PORTS` | FTPD, and the ASCII/EBCDIC card readers |
+
+At most three instances run per Docker host (`MVSCE_TARGET_MAX`). Each
+carries the label `io.mvslovers.target=<name>` and runs with `--rm`.
+`MVSCE_TARGET_IMAGE` selects another image, e.g. `:dev`.
+
 `docker logs` carries the Hercules log and the console hardcopy
 (`/logs/hercules.log`, `/logs/mvslog.txt`), preceded by the host CPU and
 followed by `[*] Hercules ended: exit code …` once Hercules quits. A wait
@@ -423,7 +466,7 @@ make clean
 mvs-docker/
 ├── hercules/          hercules image (SDL-Hyperion emulator, base image)
 ├── mvs-dev/           mvs-dev image (headless development container)
-├── mvsce-builder/     mvsce-builder image (MVS/CE + UFSD + HTTPD + mvsMF)
+├── mvsce-builder/     mvsce-builder image (MVS/CE + UFSD + HTTPD + mvsMF + FTPD), mvsce-target
 ├── mvstk4-test/       TK4- test image (planned)
 ├── mvstk5-test/       TK5 test image (planned)
 ├── mvsce-test/        MVS/CE test image (planned)

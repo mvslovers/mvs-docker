@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+# mvsce-target: disposable MVS/CE instances from the mvsce-builder image.
+#
+#   mvsce-target up [NAME] [--wait SEC] [--pull always|missing]
+#   mvsce-target status NAME
+#   mvsce-target down NAME
+#   mvsce-target list
+#   mvsce-target reap [--older-than MIN]
+#
+# Global options (before or after the command):
+#   --host SSH     run against the Docker on that ssh host; nothing has to be
+#                  installed there, the script sends itself (ssh HOST bash -s)
+#   --env          print the target as plain .env lines (no `export`)
+#   --json         print the target as JSON
+#
+# By default `up` and `status` print `export` lines for mbt 3's environment
+# target (MBT_TARGET_*, used by `--target env`), so
+#   eval "$(mvsce-target up --host mvsdev)"
+# makes the instance the current mbt target without touching any file.
+#
+# Every container gets random host ports, the label io.mvslovers.target=NAME
+# and --rm, so stopping it removes it together with its anonymous volumes.
+# `up` returns once the authenticated mvsMF fn=version answers; it does not
+# wait for TSO or FTP (see the README for when those are ready).
+#
+# Environment: MVSCE_TARGET_HOST (= --host), MVSCE_TARGET_IMAGE,
+# MVSCE_TARGET_MAX (concurrent instances per Docker host, default 3).
+
+set -euo pipefail
+
+IMAGE=${MVSCE_TARGET_IMAGE:-ghcr.io/mvslovers/mvsce-builder:latest}
+MAX=${MVSCE_TARGET_MAX:-3}
+LABEL=io.mvslovers.target
+MVS_USER=IBMUSER
+MVS_PASS=SYS1
+MVS_HLQ=IBMUSER
+# Volume for mbt's data sets: WORK00, as on the MVS/CE stands. A 5-cylinder
+# allocation on it ends CC 0000 in the image.
+VOLUME=WORK00
+JOBCLASS=A
+MSGCLASS=H          # held, so the job output stays readable through mvsMF
+HERC_USER=hercules  # the HTTP console defaults of MVS/CE's /mvs.sh
+HERC_PASS=hercules
+# container port:name, in the order they are published
+PORTS="8080:mvsmf 3270:tn3270 2121:ftp 8888:hercules 3505:reader_ascii 3506:reader_ebcdic"
+
+die() { echo "mvsce-target: $*" >&2; exit 1; }
+
+usage() {
+    sed -n '2,/^$/s/^# \{0,1\}//p' "${BASH_SOURCE[0]}" 2>/dev/null \
+        || echo "usage: mvsce-target up|status|down|list|reap ..."
+    exit "${1:-0}"
+}
+
+host=${MVSCE_TARGET_HOST:-}
+advertise=
+format=export
+wait_sec=120
+pull=always
+older=240
+args=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --host) host=${2:?--host needs a value}; shift 2 ;;
+        --advertise) advertise=${2:?}; shift 2 ;;   # set by remote mode
+        --json) format=json; shift ;;
+        --env) format=env; shift ;;
+        --wait) wait_sec=${2:?--wait needs seconds}; shift 2 ;;
+        --pull) pull=${2:?--pull needs always or missing}; shift 2 ;;
+        --older-than) older=${2:?--older-than needs minutes}; shift 2 ;;
+        -h|--help) usage 0 ;;
+        *) args+=("$1"); shift ;;
+    esac
+done
+set -- "${args[@]+"${args[@]}"}"
+cmd=${1:-}
+[ -n "$cmd" ] || usage 1
+shift
+
+# Remote mode: run this very script on the ssh host. The address printed
+# for the target is the one this machine reaches the host by.
+if [ -n "$host" ] && [ -z "$advertise" ]; then
+    addr=$(ssh -G "$host" | awk '$1 == "hostname" { print $2; exit }')
+    opts=(--advertise "${addr:-$host}" --wait "$wait_sec" --pull "$pull"
+          --older-than "$older")
+    [ "$format" = json ] && opts+=(--json)
+    [ "$format" = env ] && opts+=(--env)
+    exec ssh -T -o BatchMode=yes "$host" \
+        MVSCE_TARGET_IMAGE="$IMAGE" MVSCE_TARGET_MAX="$MAX" \
+        bash -s -- "$cmd" "$@" "${opts[@]}" < "${BASH_SOURCE[0]}"
+fi
+advertise=${advertise:-localhost}
+
+command -v docker >/dev/null || die "no docker on $(hostname)"
+
+cname() { echo "mvsce-$1"; }
+
+# host port Docker assigned to a container port (IPv4 binding)
+hostport() {
+    docker port "$1" "$2/tcp" 2>/dev/null | sed -n 's/^0\.0\.0\.0://p' | head -n 1
+}
+
+ilabel() {
+    docker image inspect --format "{{index .Config.Labels \"$2\"}}" "$1" 2>/dev/null
+}
+
+print_target() {
+    local name=$1 c image digest p key pre= herc_ref
+    c=$(cname "$name")
+    image=$(docker inspect --format '{{.Config.Image}}' "$c")
+    digest=$(docker image inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' \
+             "$(docker inspect --format '{{.Image}}' "$c")")
+    herc_ref=$(ilabel "$image" io.mvslovers.hercules.ref)
+    declare -A ports=()
+    for p in $PORTS; do
+        ports[${p#*:}]=$(hostport "$c" "${p%%:*}")
+    done
+
+    if [ "$format" = json ]; then
+        printf '{\n  "name": "%s",\n  "host": "%s",\n' "$name" "$advertise"
+        printf '  "mvsmf_url": "http://%s:%s",\n' "$advertise" "${ports[mvsmf]}"
+        printf '  "user": "%s",\n  "password": "%s",\n  "hlq": "%s",\n' \
+            "$MVS_USER" "$MVS_PASS" "$MVS_HLQ"
+        printf '  "volume": "%s",\n  "jobclass": "%s",\n  "msgclass": "%s",\n' \
+            "$VOLUME" "$JOBCLASS" "$MSGCLASS"
+        printf '  "hercules_user": "%s",\n  "hercules_password": "%s",\n' \
+            "$HERC_USER" "$HERC_PASS"
+        printf '  "ports": {'
+        local sep=
+        for p in $PORTS; do
+            key=${p#*:}
+            printf '%s\n    "%s": %s' "$sep" "$key" "${ports[$key]:-null}"
+            sep=,
+        done
+        printf '\n  },\n  "image": "%s",\n' "${digest:-$image}"
+        printf '  "versions": {\n'
+        printf '    "hercules_ref": "%s",\n' "$herc_ref"
+        printf '    "mvsce": "%s",\n' "$(ilabel "$image" io.mvslovers.mvsce.version)"
+        printf '    "ufsd": "%s",\n' "$(ilabel "$image" io.mvslovers.ufsd.version)"
+        printf '    "httpd": "%s",\n' "$(ilabel "$image" io.mvslovers.httpd.version)"
+        printf '    "mvsmf": "%s",\n' "$(ilabel "$image" io.mvslovers.mvsmf.version)"
+        printf '    "ftpd": "%s"\n  }\n}\n' "$(ilabel "$image" io.mvslovers.ftpd.version)"
+        return
+    fi
+
+    [ "$format" = export ] && pre='export '
+    cat <<END
+${pre}MBT_TARGET_MVSMF_URL=http://$advertise:${ports[mvsmf]}
+${pre}MBT_TARGET_MVSMF_USER=$MVS_USER
+${pre}MBT_TARGET_MVSMF_PASSWORD=$MVS_PASS
+${pre}MBT_TARGET_HLQ=$MVS_HLQ
+${pre}MBT_TARGET_VOLUME=$VOLUME
+${pre}MBT_TARGET_JOBCLASS=$JOBCLASS
+${pre}MBT_TARGET_MSGCLASS=$MSGCLASS
+${pre}MBT_TARGET_TN3270_HOST=$advertise
+${pre}MBT_TARGET_TN3270_PORT=${ports[tn3270]}
+${pre}MBT_TARGET_TN3270_USER=$MVS_USER
+${pre}MBT_TARGET_TN3270_PASSWORD=$MVS_PASS
+${pre}MBT_TARGET_HERCULES_URL=http://$advertise:${ports[hercules]}
+${pre}MBT_TARGET_HERCULES_USER=$HERC_USER
+${pre}MBT_TARGET_HERCULES_PASSWORD=$HERC_PASS
+${pre}MVSCE_TARGET_NAME=$name
+${pre}MVSCE_TARGET_IMAGE=${digest:-$image}
+${pre}MVSCE_TARGET_HERCULES_REF=$herc_ref
+${pre}MVSCE_TARGET_FTP_PORT=${ports[ftp]}
+${pre}MVSCE_TARGET_RDR_PORTS=${ports[reader_ascii]},${ports[reader_ebcdic]}
+END
+}
+
+exists() { [ -n "$(docker ps -a -q --filter "name=^$(cname "$1")\$")" ]; }
+
+check_name() {
+    [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] \
+        || die "invalid name '$1' (a-z, 0-9 and '-', at most 32)"
+}
+
+stop_target() {
+    local c
+    c=$(cname "$1")
+    docker stop -t 2 "$c" >/dev/null 2>&1 || true
+    # --rm removes the container (and its volumes) shortly after the stop
+    for _ in $(seq 1 30); do
+        exists "$1" || return 0
+        sleep 1
+    done
+    docker rm -f -v "$c" >/dev/null 2>&1 || true
+    ! exists "$1" || die "$c could not be removed"
+}
+
+cmd_up() {
+    local name=${1:-} c port running deadline state code p
+    if [ -z "$name" ]; then
+        name=t$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
+    fi
+    check_name "$name"
+    c=$(cname "$name")
+    ! exists "$name" || die "$c exists already (mvsce-target down $name)"
+    running=$(docker ps -q --filter "label=$LABEL" | wc -l)
+    [ "$running" -lt "$MAX" ] \
+        || die "$running of $MAX instances already running on $(hostname)"
+
+    if [ "$pull" = always ]; then
+        docker pull -q "$IMAGE" >/dev/null || die "cannot pull $IMAGE"
+    fi
+    local pub=()
+    for p in $PORTS; do pub+=(-p "0:${p%%:*}"); done
+    docker run -d --rm --name "$c" \
+        --label "$LABEL=$name" \
+        --label "$LABEL.owner=${SUDO_USER:-$(id -un)}" \
+        --label "$LABEL.created=$(date +%s)" \
+        "${pub[@]}" "$IMAGE" >/dev/null || die "docker run failed"
+    trap 'stop_target "$name"; exit 130' INT TERM
+
+    port=$(hostport "$c" 8080)
+    deadline=$(( $(date +%s) + wait_sec ))
+    while :; do
+        code=$(curl -s -o /dev/null -w '%{http_code}' -u "$MVS_USER:$MVS_PASS" \
+               "http://127.0.0.1:$port/zosmf/test?fn=version" || true)
+        [ "$code" = 200 ] && break
+        state=$(docker inspect --format '{{.State.Status}}' "$c" 2>/dev/null || echo gone)
+        if [ "$state" != running ] || [ "$(date +%s)" -ge "$deadline" ]; then
+            echo "mvsce-target: $c not ready (container $state, mvsMF $code)" >&2
+            docker logs --tail 30 "$c" >&2 2>/dev/null || true
+            stop_target "$name"
+            exit 1
+        fi
+        sleep 1
+    done
+    trap - INT TERM
+    print_target "$name"
+}
+
+cmd_status() {
+    [ -n "${1:-}" ] || die "status needs a NAME"
+    exists "$1" || die "no target $1"
+    print_target "$1"
+}
+
+cmd_down() {
+    [ -n "${1:-}" ] || die "down needs a NAME"
+    exists "$1" || die "no target $1"
+    stop_target "$1"
+    echo "mvsce-target: $(cname "$1") removed" >&2
+}
+
+cmd_list() {
+    local id name created owner status now
+    now=$(date +%s)
+    printf '%-20s %-8s %7s %6s %6s %6s  %s\n' NAME STATE AGE_MIN MVSMF TN3270 FTP OWNER
+    for id in $(docker ps -a -q --filter "label=$LABEL"); do
+        name=$(docker inspect --format "{{index .Config.Labels \"$LABEL\"}}" "$id")
+        created=$(docker inspect --format "{{index .Config.Labels \"$LABEL.created\"}}" "$id")
+        owner=$(docker inspect --format "{{index .Config.Labels \"$LABEL.owner\"}}" "$id")
+        status=$(docker inspect --format '{{.State.Status}}' "$id")
+        printf '%-20s %-8s %7s %6s %6s %6s  %s\n' "$name" "$status" \
+            "$(( (now - ${created:-$now}) / 60 ))" "$(hostport "$id" 8080)" \
+            "$(hostport "$id" 3270)" "$(hostport "$id" 2121)" "$owner"
+    done
+}
+
+cmd_reap() {
+    local id name created now n=0
+    now=$(date +%s)
+    for id in $(docker ps -a -q --filter "label=$LABEL"); do
+        name=$(docker inspect --format "{{index .Config.Labels \"$LABEL\"}}" "$id")
+        created=$(docker inspect --format "{{index .Config.Labels \"$LABEL.created\"}}" "$id")
+        if [ $(( (now - ${created:-0}) / 60 )) -ge "$older" ]; then
+            stop_target "$name"
+            echo "mvsce-target: reaped $(cname "$name")" >&2
+            n=$((n + 1))
+        fi
+    done
+    echo "mvsce-target: $n reaped (older than $older min)" >&2
+}
+
+case "$cmd" in
+    up) cmd_up "$@" ;;
+    status) cmd_status "$@" ;;
+    down) cmd_down "$@" ;;
+    list) cmd_list ;;
+    reap) cmd_reap ;;
+    *) usage 1 ;;
+esac
