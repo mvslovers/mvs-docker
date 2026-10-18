@@ -14,7 +14,7 @@ top of it.
 | [`hercules`](#hercules) | SDL-Hyperion S/370 emulator — base image | published, multi-arch |
 | [`mvs-dev`](#mvs-dev) | Headless development container | published, amd64 |
 | [`mvsce`](#mvsce) | MVS/CE + UFSD + HTTPD + mvsMF + FTPD, for CI and disposable test instances | published, multi-arch |
-| `tk5` | TK5 with the same products, installed with SMP | planned |
+| [`tk5`](#tk5) | TK5 as shipped, on the same Hercules; the products follow, installed with SMP | in progress, `:dev` |
 
 All images are published to `ghcr.io/mvslovers/<name>` and are public.
 
@@ -475,17 +475,56 @@ on a dozen runners and reports per start whether mvsMF came up, how
 Hercules ended and on which CPU — the diagnostic for
 [brexx370#277](https://github.com/mvslovers/brexx370/issues/277).
 
-## tk5 (planned)
+## tk5
 
-TK5 with the same products, installed with SMP from their release
-packages rather than copied in, for what MVS/CE cannot answer:
-TK5-specific behaviour and SMP installs.
+**Image:** `ghcr.io/mvslovers/tk5` (`:dev` only for now)
+
+[TK5](https://www.prince-webdesign.nl/tk5) — Rob Prins' MVS 3.8j turnkey
+system — for what MVS/CE cannot answer: TK5-specific behaviour and SMP
+installs. Planned in three steps:
+
+1. **TK5 as shipped** (this is it now): Update 5 from the official download,
+   pinned by its SHA-256, on Hyperion at the same `HERCULES_REF` as `mvsce`,
+   for `amd64` and `arm64`.
+2. UFSD, HTTPD, mvsMF and FTPD **installed with SMP** from their release
+   packages, each install verified by the member list, and a second IPL
+   so the APF entries take effect. The container then carries a real SMP
+   inventory of the released levels, on which an upgrade to a `-dev` level
+   can be rehearsed.
+3. RAKF users, autostart, `mvsce-target` support.
+
+| Component | Version | Where |
+|-----------|---------|-------|
+| [TK5](https://www.prince-webdesign.nl/tk5) | Update 5 (2026-02-18) | `/tk5`, as unpacked, without TK5's own Hercules builds and its PDF manuals |
+| [Hercules](https://github.com/SDL-Hercules-390/hyperion) (SDL-Hyperion, `develop`) | `a742398074` (4.10.0.11783) | `/opt/hercules` |
+
+The values are `ARG`s in `tk5/Dockerfile` (`TK5_UPDATE`, `TK5_URL`,
+`TK5_SHA256`, `HERCULES_REF`); a new TK5 update is those three. TK5's own
+`conf/`, `scripts/` and `dasd/` stay as shipped: the image sets only the
+variables TK5 itself reads (`CNSLPORT`, `HTTPPORT`, `RDRPORT`, `NUMCPU`, …),
+and IPLs the way TK5's `mvs_ipl` does in daemon mode.
+
+```bash
+docker run -d --rm --name tk5 -p 3270:3270 -p 3505:3505 -p 8888:8888 \
+  ghcr.io/mvslovers/tk5:dev
+docker logs -f tk5        # TSO is up at IKT005I TCAS IS INITIALIZED
+```
+
+Ports as in `mvsce`: TN3270 3270, ASCII card reader 3505, Hercules web
+console 8888 (TK5's default is 8038). TK5's users are its own (`HERC01` /
+`CUL8TR` and so on, see TK5's manual).
+
+Measured on mvsdev (4 cores, idle): `IKT005I` 45 s after `docker run`.
+About 12 s of that are the pauses in TK5's `scripts/ipl.rc`
+(`IPL_PAUSE`, 4 s each), and 30 s pass between `BSPSETPF ENDED` and
+`DYNAMASK STARTED`; why is not yet established.
 
 ## Build
 
-`hercules`, `mvs-dev` and `mvsce` are built and published by GitHub Actions
-(on changes under their respective directories); `mvsce` goes to `:dev` and
-is promoted to `:latest` by hand (`mvsce-promote.yml`) after the IPL sample.
+`hercules`, `mvs-dev`, `mvsce` and `tk5` are built and published by GitHub
+Actions (on changes under their respective directories); `mvsce` and `tk5`
+go to `:dev` and are promoted to `:latest` by hand (`promote.yml`), `mvsce`
+after the IPL sample.
 `make` builds and tests locally:
 
 ```bash
@@ -530,6 +569,7 @@ mvs-docker/
 ├── mvs-dev/           mvs-dev image (headless development container)
 ├── mvsce/             mvsce image (MVS/CE + UFSD + HTTPD + mvsMF + FTPD), mvsce-target
 ├── mvsce-builder/     mvsce-target link at its former path
+├── tk5/               tk5 image (TK5 as shipped; the products follow)
 ├── common/            shared scripts and configs
 ├── .github/workflows/ CI: hercules, mvs-dev, mvsce (build, IPL sample, promote)
 ├── Makefile           build/push/test automation (non-hercules images)

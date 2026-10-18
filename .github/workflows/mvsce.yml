@@ -4,7 +4,7 @@ run-name: Build mvsce (${{ github.event_name == 'pull_request' && 'PR, no push' 
 # Builds mvsce natively for amd64 and arm64 (the build IPLs MVS, so
 # no emulation), starts each result and checks what runs in it, then
 # assembles a multi-arch :dev from the two digests. Pull requests build and
-# check only. Promoting :dev to :latest is mvsce-promote.yml.
+# check only. Promoting :dev to :latest is promote.yml.
 #
 # ghcr.io/mvslovers/mvsce-builder, the image's former name, gets the same
 # :dev and :latest until its users have moved to mvsce.

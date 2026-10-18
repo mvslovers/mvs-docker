@@ -1,17 +1,22 @@
-name: Promote mvsce
-run-name: Promote mvsce ${{ inputs.from }} to latest
+name: Promote mvsce or tk5
+run-name: Promote ${{ inputs.image }} ${{ inputs.from }} to latest
 
 # Makes :latest the image currently tagged :dev (after the IPL sample has
 # been run against :dev). The previous :latest stays reachable under the
 # date of the promotion, with -2, -3 ... if that date is taken already.
-# Until its users have moved, mvsce-builder (the image's former name) is
-# promoted the same way, from the same mvsce digest.
+# Until its users have moved, mvsce-builder (mvsce's former name) is
+# promoted with mvsce, from the same digest.
 
 on:
   workflow_dispatch:
     inputs:
+      image:
+        description: Image to promote
+        type: choice
+        options: [mvsce, tk5]
+        default: mvsce
       from:
-        description: Tag or digest (sha256:...) of ghcr.io/mvslovers/mvsce to promote, the one the IPL sample ran against
+        description: Tag or digest (sha256:...) to promote, the one the IPL sample ran against
         default: dev
 
 permissions:
@@ -19,8 +24,8 @@ permissions:
   packages: write
 
 env:
-  IMAGE_NAME: ghcr.io/mvslovers/mvsce
-  NAMES: ghcr.io/mvslovers/mvsce ghcr.io/mvslovers/mvsce-builder
+  IMAGE_NAME: ghcr.io/mvslovers/${{ inputs.image }}
+  NAMES: ghcr.io/mvslovers/${{ inputs.image }}${{ inputs.image == 'mvsce' && ' ghcr.io/mvslovers/mvsce-builder' || '' }}
 
 jobs:
   promote:
