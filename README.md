@@ -13,18 +13,16 @@ top of it.
 |-------|---------|--------|
 | [`hercules`](#hercules) | SDL-Hyperion S/370 emulator — base image | published, multi-arch |
 | [`mvs-dev`](#mvs-dev) | Headless development container | published, amd64 |
-| [`mvsce-builder`](#mvsce-builder) | MVS/CE + UFSD + HTTPD + mvsMF + FTPD for CI | published, amd64 |
-| `mvstk4-test` / `mvstk5-test` / `mvsce-test` | Test images | planned |
+| [`mvsce`](#mvsce) | MVS/CE + UFSD + HTTPD + mvsMF + FTPD, for CI and disposable test instances | published, multi-arch |
+| `tk5` | TK5 with the same products, installed with SMP | planned |
 
 All images are published to `ghcr.io/mvslovers/<name>` and are public.
 
-> **Note on architectures:** `hercules` is multi-arch (`amd64` + `arm64`).
-> `mvs-dev` is built by CI and reproducible, but `amd64`-only for now — its
-> `c2asm370` cross-compiler has no native arm64 build yet. It does **not** use
-> the `hercules` base image (it is a toolchain that talks to a *remote* MVS, not
-> an MVS runtime). `mvsce-builder` is still built locally with `make` and
-> therefore `amd64`-only for now; its base image `mainframed767/mvsce` is
-> multi-arch (`amd64` + `arm64`), so a CI build can add `arm64`.
+> **Note on architectures:** `hercules` and `mvsce` are multi-arch
+> (`amd64` + `arm64`), both built by CI. `mvs-dev` is built by CI and
+> reproducible, but `amd64`-only for now — its `c2asm370` cross-compiler has
+> no native arm64 build yet. It does **not** use the `hercules` base image (it
+> is a toolchain that talks to a *remote* MVS, not an MVS runtime).
 
 ---
 
@@ -183,7 +181,7 @@ interact with a remote MVS system via the mvsMF REST API.
 **Image:** `ghcr.io/mvslovers/mvs-dev` (public)
 
 This image does **not** contain MVS itself. It connects to an external MVS
-system (e.g. a separate mvsce-builder container, remote TK4-/TK5) configured
+system (e.g. a separate mvsce container, a remote TK5) configured
 via `.env` variables.
 
 ### Tags
@@ -222,9 +220,9 @@ docker pull ghcr.io/mvslovers/mvs-dev
 docker run -it -v "$(pwd)":/home/dev/workspace ghcr.io/mvslovers/mvs-dev
 ```
 
-### Docker-outside-Docker with mvsce-builder
+### Docker-outside-Docker with mvsce
 
-To start an mvsce-builder as the MVS backend from within mvs-dev,
+To start an mvsce container as the MVS backend from within mvs-dev,
 bind-mount the host Docker socket and use a shared Docker network so both
 containers can communicate by name:
 
@@ -238,16 +236,16 @@ docker run -it --network mvs-net \
   -v /var/run/docker.sock:/var/run/docker.sock \
   ghcr.io/mvslovers/mvs-dev
 
-# Inside the container, start mvsce-builder on the same network
+# Inside the container, start mvsce on the same network
 docker run -d --rm --name mvs --network mvs-net \
   -p 3270:3270 -p 8888:8888 \
-  ghcr.io/mvslovers/mvsce-builder
+  ghcr.io/mvslovers/mvsce
 
-# The mvsMF API is now reachable at http://mvs:1080 from within mvs-dev
-curl -u IBMUSER:SYS1 http://mvs:1080/zosmf/info
+# The mvsMF API is now reachable at http://mvs:8080 from within mvs-dev
+curl -u IBMUSER:SYS1 'http://mvs:8080/zosmf/test?fn=version'
 ```
 
-Set `MVSMF_HOST=mvs` and `MVSMF_PORT=1080` in your project's `.env` file.
+Set `MVSMF_HOST=mvs` and `MVSMF_PORT=8080` in your project's `.env` file.
 
 ### Connecting to MVS
 
@@ -266,18 +264,20 @@ with MVS via the mvsMF REST API.
 
 ---
 
-## mvsce-builder
+## mvsce
 
-Build image for CI pipelines. Contains a fully operational MVS/CE system
-with UFSD, HTTPD, mvsMF (z/OSMF-compatible REST API) and FTPD installed
-and started at IPL.
+A fully operational MVS/CE system with UFSD, HTTPD, mvsMF (z/OSMF-compatible
+REST API) and FTPD installed and started at IPL, in the same state on every
+start: the MVS side of CI pipelines and of disposable test instances
+(`mvsce-target`, below). The build itself runs on the host (cc370); MVS
+gets the deploy and the tests.
 
-**Image:** `ghcr.io/mvslovers/mvsce-builder` (public)
+**Image:** `ghcr.io/mvslovers/mvsce` (public)
 
-Use cases:
-- Cross-compile C to S/370 assembler, then assemble + link on MVS
-- Upload sources, submit JCL, poll results via REST API
-- Generate XMIT distribution files
+**Formerly `mvsce-builder`.** `ghcr.io/mvslovers/mvsce-builder` gets the same
+`:dev` and `:latest` until its users have moved, and is then frozen at its
+last level; `mvsce-builder/mvsce-target` is a link to `mvsce/mvsce-target`
+for as long.
 
 ### What's inside
 
@@ -290,7 +290,7 @@ Use cases:
 | [mvsMF](https://github.com/mvslovers/mvsmf) | 1.3.0 | `HTTPD.LINKLIB` |
 | [FTPD](https://github.com/mvslovers/ftpd) | 1.2.0 | `MVSLOVER.FTPD.LOADLIB` |
 
-The versions are `ARG`s in `mvsce-builder/Dockerfile`
+The versions are `ARG`s in `mvsce/Dockerfile`
 (`MVSCE_VERSION`, `HERCULES_REF`, `UFSD_VERSION`, `HTTPD_VERSION`,
 `MVSMF_VERSION`, `FTPD_VERSION`) and are recorded as image labels
 (`io.mvslovers.<component>.version`, `io.mvslovers.hercules.ref`).
@@ -340,11 +340,11 @@ published as the new level. The build jobs print to `printers/prt00e.txt`
 ### Usage
 
 ```bash
-docker pull ghcr.io/mvslovers/mvsce-builder
+docker pull ghcr.io/mvslovers/mvsce
 
 docker run -d --rm --name mvs-build \
   -p 3270:3270 -p 3505:3505 -p 3506:3506 -p 8080:8080 -p 8888:8888 \
-  ghcr.io/mvslovers/mvsce-builder
+  ghcr.io/mvslovers/mvsce
 
 # Wait for MVS to IPL and HTTPD to come up, then check the mvsMF level
 curl -u IBMUSER:SYS1 'http://localhost:8080/zosmf/test?fn=version'
@@ -370,7 +370,7 @@ inside the container only.
 
 ### Disposable test instances: `mvsce-target`
 
-`mvsce-builder/mvsce-target` starts an instance, waits until mvsMF answers
+`mvsce/mvsce-target` starts an instance, waits until mvsMF answers
 and prints it as an mbt 3 environment target; `down` removes it again,
 completely. It runs the instance in one of two places, and prints the same
 target either way:
@@ -384,10 +384,10 @@ target either way:
 `MVSCE_TARGET_RUNTIME=docker|container` forces the local runtime.
 
 ```bash
-eval "$(mvsce-builder/mvsce-target up --host mvsdev)"   # or: up (locally)
+eval "$(mvsce/mvsce-target up --host mvsdev)"   # or: up (locally)
 mbt target ping env --tso --wait 60     # TSO is up ~1.5 s after mvsMF
 mbt test --mvs --target env
-mvsce-builder/mvsce-target down "$MVSCE_TARGET_NAME" --host mvsdev
+mvsce/mvsce-target down "$MVSCE_TARGET_NAME" --host mvsdev
 ```
 
 | Command | Does |
@@ -467,49 +467,48 @@ Unlike stock MVS/CE the image runs Hercules with **one CPU** (`NUMCPU 1`):
 with two, the IPL occasionally stalled around the second CPU. Start the
 container with `-e MVSCE_NUMCPU=2` to get two back.
 
-The `mvsce-builder IPL sample` workflow (manual dispatch) starts the image
+The `mvsce IPL sample` workflow (manual dispatch) starts the image
 on a dozen runners and reports per start whether mvsMF came up, how
 Hercules ended and on which CPU — the diagnostic for
 [brexx370#277](https://github.com/mvslovers/brexx370/issues/277).
 
-### mvstk4-test / mvstk5-test / mvsce-test (planned)
+## tk5 (planned)
 
-Test images based on TK4-, TK5, and MVS/CE for validating builds
-against different MVS configurations.
-
-**Status:** Planned
+TK5 with the same products, installed with SMP from their release
+packages rather than copied in, for what MVS/CE cannot answer:
+TK5-specific behaviour and SMP installs.
 
 ## Build
 
-`hercules` and `mvs-dev` are built and published by GitHub Actions (on changes
-under their respective directories). The remaining images are still built locally
-with `make` and are being reworked to build on the `hercules` base image and move
-to GitHub Actions as well:
+`hercules`, `mvs-dev` and `mvsce` are built and published by GitHub Actions
+(on changes under their respective directories); `mvsce` goes to `:dev` and
+is promoted to `:latest` by hand (`mvsce-promote.yml`) after the IPL sample.
+`make` builds and tests locally:
 
 ```bash
 # Build all images
 make all
 
 # Build individual images
-make mvsce-builder
+make mvsce
 make mvs-dev
 
 # Push all images to ghcr.io
 make publish
 
 # Push individual images
-make publish-mvsce-builder
+make publish-mvsce
 make publish-mvs-dev
 
 # Smoke tests
-make test-mvsce-builder
+make test-mvsce
 make test-mvs-dev
 
 # Cleanup
 make clean
 ```
 
-## Ports (mvsce-builder)
+## Ports (mvsce)
 
 | Port | Service |
 |------|---------|
@@ -526,12 +525,10 @@ make clean
 mvs-docker/
 ├── hercules/          hercules image (SDL-Hyperion emulator, base image)
 ├── mvs-dev/           mvs-dev image (headless development container)
-├── mvsce-builder/     mvsce-builder image (MVS/CE + UFSD + HTTPD + mvsMF + FTPD), mvsce-target
-├── mvstk4-test/       TK4- test image (planned)
-├── mvstk5-test/       TK5 test image (planned)
-├── mvsce-test/        MVS/CE test image (planned)
+├── mvsce/             mvsce image (MVS/CE + UFSD + HTTPD + mvsMF + FTPD), mvsce-target
+├── mvsce-builder/     mvsce-target link at its former path
 ├── common/            shared scripts and configs
-├── .github/workflows/ CI: hercules build/release/retag/nightly
+├── .github/workflows/ CI: hercules, mvs-dev, mvsce (build, IPL sample, promote)
 ├── Makefile           build/push/test automation (non-hercules images)
 └── README.md
 ```

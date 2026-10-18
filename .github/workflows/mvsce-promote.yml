@@ -1,0 +1,58 @@
+name: Promote mvsce
+run-name: Promote mvsce ${{ inputs.from }} to latest
+
+# Makes :latest the image currently tagged :dev (after the IPL sample has
+# been run against :dev). The previous :latest stays reachable under the
+# date of the promotion, with -2, -3 ... if that date is taken already.
+# Until its users have moved, mvsce-builder (the image's former name) is
+# promoted the same way, from the same mvsce digest.
+
+on:
+  workflow_dispatch:
+    inputs:
+      from:
+        description: Tag or digest (sha256:...) of ghcr.io/mvslovers/mvsce to promote, the one the IPL sample ran against
+        default: dev
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/mvslovers/mvsce
+  NAMES: ghcr.io/mvslovers/mvsce ghcr.io/mvslovers/mvsce-builder
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote, keeping the previous latest under a dated tag
+        run: |
+          digest() { docker buildx imagetools inspect "$1" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"'; }
+          case "${{ inputs.from }}" in
+            sha256:*) from=$(digest "$IMAGE_NAME@${{ inputs.from }}") ;;
+            *) from=$(digest "$IMAGE_NAME:${{ inputs.from }}") ;;
+          esac
+          [ -n "$from" ] || { echo "no $IMAGE_NAME:${{ inputs.from }}"; exit 1; }
+          echo "from=$IMAGE_NAME@$from"
+          for name in $NAMES; do
+            latest=$(digest "$name:latest")
+            echo "$name: latest=$latest"
+            if [ "$latest" = "$from" ]; then
+              echo "$name:latest is it already"; continue
+            fi
+            if [ -n "$latest" ]; then
+              tag=$(date -u +%Y%m%d); n=1
+              while [ -n "$(digest "$name:$tag")" ]; do n=$((n + 1)); tag=$(date -u +%Y%m%d)-$n; done
+              docker buildx imagetools create -t "$name:$tag" "$name@$latest"
+              echo "previous $name:latest kept as :$tag"
+            fi
+            docker buildx imagetools create -t "$name:latest" "$IMAGE_NAME@$from"
+            docker buildx imagetools inspect "$name:latest"
+          done

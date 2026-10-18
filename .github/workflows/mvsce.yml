@@ -1,30 +1,34 @@
-name: Build mvsce-builder
-run-name: Build mvsce-builder (${{ github.event_name == 'pull_request' && 'PR, no push' || ':dev' }})
+name: Build mvsce
+run-name: Build mvsce (${{ github.event_name == 'pull_request' && 'PR, no push' || ':dev' }})
 
-# Builds mvsce-builder natively for amd64 and arm64 (the build IPLs MVS, so
+# Builds mvsce natively for amd64 and arm64 (the build IPLs MVS, so
 # no emulation), starts each result and checks what runs in it, then
 # assembles a multi-arch :dev from the two digests. Pull requests build and
-# check only. Promoting :dev to :latest is mvsce-builder-promote.yml.
+# check only. Promoting :dev to :latest is mvsce-promote.yml.
+#
+# ghcr.io/mvslovers/mvsce-builder, the image's former name, gets the same
+# :dev and :latest until its users have moved to mvsce.
 
 on:
   push:
     branches:
       - main
     paths:
-      - "mvsce-builder/Dockerfile"
-      - "mvsce-builder/setup_mvsce.py"
-      - "mvsce-builder/entrypoint.sh"
-      - ".github/workflows/mvsce-builder.yml"
+      - "mvsce/Dockerfile"
+      - "mvsce/setup_mvsce.py"
+      - "mvsce/entrypoint.sh"
+      - ".github/workflows/mvsce.yml"
   pull_request:
     paths:
-      - "mvsce-builder/Dockerfile"
-      - "mvsce-builder/setup_mvsce.py"
-      - "mvsce-builder/entrypoint.sh"
-      - ".github/workflows/mvsce-builder.yml"
+      - "mvsce/Dockerfile"
+      - "mvsce/setup_mvsce.py"
+      - "mvsce/entrypoint.sh"
+      - ".github/workflows/mvsce.yml"
   workflow_dispatch:
 
 env:
-  IMAGE_NAME: ghcr.io/mvslovers/mvsce-builder
+  IMAGE_NAME: ghcr.io/mvslovers/mvsce
+  OLD_NAME: ghcr.io/mvslovers/mvsce-builder
   PUSH: ${{ github.event_name != 'pull_request' }}
 
 jobs:
@@ -58,7 +62,7 @@ jobs:
         if: env.PUSH == 'true'
         uses: docker/build-push-action@v7
         with:
-          context: ./mvsce-builder
+          context: ./mvsce
           platforms: linux/${{ matrix.arch }}
           provenance: false
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
@@ -67,10 +71,10 @@ jobs:
         if: env.PUSH != 'true'
         uses: docker/build-push-action@v7
         with:
-          context: ./mvsce-builder
+          context: ./mvsce
           platforms: linux/${{ matrix.arch }}
           load: true
-          tags: mvsce-builder:test
+          tags: mvsce:test
 
       # Start the image and read back what runs: the Hercules commit and the
       # mvsMF level must match the labels the build set, and FTPD has to
@@ -78,7 +82,7 @@ jobs:
       # about 30 s after the IPL, ftpd#176).
       - name: Start and check
         env:
-          IMAGE: ${{ env.PUSH == 'true' && format('{0}@{1}', env.IMAGE_NAME, steps.push.outputs.digest) || 'mvsce-builder:test' }}
+          IMAGE: ${{ env.PUSH == 'true' && format('{0}@{1}', env.IMAGE_NAME, steps.push.outputs.digest) || 'mvsce:test' }}
         run: |
           set -u
           [ "$PUSH" = true ] && docker pull -q "$IMAGE"
@@ -159,3 +163,5 @@ jobs:
           docker buildx imagetools create -t ${{ env.IMAGE_NAME }}:dev \
             $(for d in *; do echo "${{ env.IMAGE_NAME }}@sha256:$d"; done)
           docker buildx imagetools inspect ${{ env.IMAGE_NAME }}:dev
+          docker buildx imagetools create -t ${{ env.OLD_NAME }}:dev ${{ env.IMAGE_NAME }}:dev
+          docker buildx imagetools inspect ${{ env.OLD_NAME }}:dev

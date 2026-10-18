@@ -82,7 +82,7 @@ MODULES = [
 # resolve the caller themselves are public, everything else needs a login
 # and answers a bare 401 (no browser dialog) without one.
 HTTPPRM0 = """\
-# HTTPPRM0 - written by mvsce-builder (mvslovers/mvs-docker)
+# HTTPPRM0 - written by mvsce (mvslovers/mvs-docker)
 PORT=8080
 DOCROOT=/www
 MOD=MVSMF /zosmf/info                    AUTH=NONE
@@ -97,7 +97,7 @@ FTPD_PROC = """\
 //FTPD     PROC M=FTPDPRM0,
 //            D='SYS2.PARMLIB'
 //*
-//* FTPD - written by mvsce-builder (mvslovers/mvs-docker)
+//* FTPD - written by mvsce (mvslovers/mvs-docker)
 //*
 //FTPD     EXEC PGM=FTPD,REGION=8M,TIME=1440
 //STEPLIB  DD  DISP=SHR,DSN=MVSLOVER.FTPD.LOADLIB

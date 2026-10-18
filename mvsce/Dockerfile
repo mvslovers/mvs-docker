@@ -1,4 +1,4 @@
-# mvsce-builder: MVS/CE with current UFSD, HTTPD, mvsMF and FTPD releases.
+# mvsce: MVS/CE with current UFSD, HTTPD, mvsMF and FTPD releases.
 #
 # MVS/CE 3.0.0 already installs UFSD, HTTPD, mvsMF and FTPD through MVP (not
 # started), including the STC procedures, the parmlib members and the UFS

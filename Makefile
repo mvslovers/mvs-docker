@@ -1,22 +1,22 @@
 REGISTRY = ghcr.io/mvslovers
 TAG      = latest
 
-# --- Image: mvsce-builder ---
+# --- Image: mvsce ---
 
-.PHONY: mvsce-builder publish-mvsce-builder test-mvsce-builder clean-mvsce-builder
+.PHONY: mvsce publish-mvsce test-mvsce clean-mvsce
 
-mvsce-builder:
-	DOCKER_BUILDKIT=1 docker build -t $(REGISTRY)/mvsce-builder:$(TAG) mvsce-builder/
+mvsce:
+	DOCKER_BUILDKIT=1 docker build -t $(REGISTRY)/mvsce:$(TAG) mvsce/
 
-publish-mvsce-builder: mvsce-builder
-	docker push $(REGISTRY)/mvsce-builder:$(TAG)
+publish-mvsce: mvsce
+	docker push $(REGISTRY)/mvsce:$(TAG)
 
 # --rm: the image declares six VOLUMEs, and a plain `docker rm` leaves
 # them behind as anonymous volumes on every run.
-test-mvsce-builder:
+test-mvsce:
 	docker run -d --rm --name mvsce-test \
 	  -p 3270:3270 -p 3505:3505 -p 3506:3506 -p 8080:8080 -p 8888:8888 \
-	  $(REGISTRY)/mvsce-builder:$(TAG)
+	  $(REGISTRY)/mvsce:$(TAG)
 	@echo "Waiting for MVS IPL and HTTPD..."
 	@rc=1; for i in $$(seq 1 60); do \
 	  if curl -sf -u IBMUSER:SYS1 'http://localhost:8080/zosmf/test?fn=version'; then rc=0; break; fi; \
@@ -26,8 +26,8 @@ test-mvsce-builder:
 	docker stop mvsce-test >/dev/null; \
 	exit $$rc
 
-clean-mvsce-builder:
-	docker rmi $(REGISTRY)/mvsce-builder:$(TAG) || true
+clean-mvsce:
+	docker rmi $(REGISTRY)/mvsce:$(TAG) || true
 
 # --- Image: mvs-dev ---
 
@@ -57,6 +57,6 @@ clean-mvs-dev:
 # --- Convenience aliases ---
 
 .PHONY: all publish clean
-all: mvsce-builder mvs-dev
-publish: publish-mvsce-builder publish-mvs-dev
-clean: clean-mvsce-builder clean-mvs-dev
+all: mvsce mvs-dev
+publish: publish-mvsce publish-mvs-dev
+clean: clean-mvsce clean-mvs-dev
