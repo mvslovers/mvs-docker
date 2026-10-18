@@ -24,6 +24,12 @@
 
 cd /
 
+# MVS/CE's /mvs.sh copies the DASDs, config and certificates into the
+# image's VOLUMEs. Docker creates those directories; Apple's container
+# does not, and /mvs.sh then fails ("cp: cannot create regular file
+# '/dasd/'") and Hercules ends at once. On Docker this does nothing.
+mkdir -p /config /dasd /logs /printers /punchcards /certs
+
 # MVSCE_NUMCPU overrides the number of CPUs (this image sets NUMCPU 1,
 # MVS/CE ships 2; see the Dockerfile). It acts on the template /mvs.sh
 # copies to /config/local.cnf, so only on a first start, before that copy

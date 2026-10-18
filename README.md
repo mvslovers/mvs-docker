@@ -319,12 +319,23 @@ only:
   them (`/zosmf/*` is `AUTH=TOKEN`),
 - rewrites `SYS2.PROCLIB(FTPD)` with the `HASPACE1` DD that FTPD's JES
   interface needs (MVP's procedure has only `HASPCKPT`),
+- sets up RAKF for the two servers that drop from `STC` to an identity of
+  their own at startup, as
+  [FTPD_RAKF_SETUP.md](https://github.com/mvslovers/ftpd/blob/v1.2.0/docs/FTPD_RAKF_SETUP.md)
+  and httpd's `docs/installation.md` (section 8) describe: the users `FTPD`
+  and `HTTPD` (group `USER`, no operations authority, random passwords
+  nobody keeps) and the facility `FTPAUTH`, granted to the `ADMIN` group
+  only, so `IBMUSER` and `MVSCE01` may use FTP while `MVSCE02` and `FTPD`
+  itself get `530 Not authorized for FTP access`,
 - adds `S UFSD` / `S HTTPD` / `S FTPD` to `SYS1.PARMLIB(COMMND00)`.
 
 It then starts all three and **fails unless** the `UFSD000I`/`HTTPD000I`/
 `FTPD000I` banners and `/zosmf/test?fn=version` report the pinned versions,
-`FTPD001I READY` follows and an FTP login as `IBMUSER` succeeds, so a build
-that installed nothing cannot be published as the new level.
+neither server logs `RAKF0004`, `HTTPD004W` or `FTPD004W`, HTTPD logs
+`HTTPD002I AUTHORIZED BY`, FTPD `FTPD004I STC IDENTITY SET TO FTPD/USER`, `FTPD001I READY` follows, an FTP login as `IBMUSER` succeeds and
+one as `FTPD` is refused, so a build that installed nothing cannot be
+published as the new level. The build jobs print to `printers/prt00e.txt`
+(MSGCLASS A); a failed build shows its tail, a good one empties it.
 
 ### Usage
 
@@ -349,8 +360,8 @@ FTPD reports `FTPD001I READY` about 2 s after `docker run`, but does not
 greet its first connection until the `SETPFKEY` started task from
 `COMMND00` has ended, about 30 s after the IPL (`$HASP395 SETPFKEY ENDED`;
 measured twice: greeting 1 s after it). A connection made earlier is
-accepted and then waits. FTPD also logs `FTPD004W RACINIT ENVIR=CREATE FAILED
-RC=28`, because MVS/CE's RAKF has no `FTPD` user; logins still work. Passive
+accepted and then waits
+([ftpd#176](https://github.com/mvslovers/ftpd/issues/176)). Passive
 mode answers with `127,0,0,1` (MVS/CE's `FTPDPRM0`), so data connections work
 inside the container only.
 
@@ -396,6 +407,10 @@ address `ssh -G` resolves for it. The output is `export` lines by default,
 At most three instances run per Docker host (`MVSCE_TARGET_MAX`). Each
 carries the label `io.mvslovers.target=<name>` and runs with `--rm`.
 `MVSCE_TARGET_IMAGE` selects another image, e.g. `:dev`.
+
+The image also runs under Apple's `container` on Apple silicon (arm64,
+natively): `container run -d --rm -p 28080:8080 -p 23270:3270
+ghcr.io/mvslovers/mvsce-builder` answered `fn=version` 3 s after the start.
 
 `docker logs` carries the Hercules log and the console hardcopy
 (`/logs/hercules.log`, `/logs/mvslog.txt`), preceded by the host CPU and

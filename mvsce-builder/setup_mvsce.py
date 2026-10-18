@@ -22,13 +22,22 @@ This script:
   2. Writes SYS2.PARMLIB(HTTPPRM0) in the form mvsMF documents, and
      SYS2.PROCLIB(FTPD) with the spool DDs FTPD's JES interface needs.
   3. Adds S UFSD / S HTTPD / S FTPD to SYS1.PARMLIB(COMMND00).
-  4. Starts all three and checks what is actually running: the UFSD000I,
+  4. Sets up RAKF for the two servers that switch identity at startup:
+     the users FTPD and HTTPD (group USER, no operations authority), as
+     ftpd's docs/FTPD_RAKF_SETUP.md and httpd's docs/installation.md
+     describe, and the FTPAUTH facility, which only ADMIN may use.
+  5. Starts all three and checks what is actually running: the UFSD000I,
      HTTPD000I and FTPD000I banners against UFSD_VERSION / HTTPD_VERSION /
-     FTPD_VERSION, FTPD001I READY, an FTP login, and
+     FTPD_VERSION, no RAKF0004 / HTTPD004W / FTPD004W for either server,
+     FTPD004I (FTPD runs as FTPD/USER, not as STC),
+     FTPD001I READY, an FTP login, FTPAUTH refusing the FTPD user, and
      /zosmf/test?fn=version against MVSMF_VERSION.
      A build that installed nothing therefore fails instead of publishing
      the previous level.
-  5. Purges the spool and shuts MVS down with MVS/CE's own SHUTFAST.
+  6. Purges the spool and shuts MVS down with MVS/CE's own SHUTFAST.
+
+The jobs print their output (MSGCLASS=A) to printers/prt00e.txt, whose
+tail a failed build shows; the file is emptied at the end.
 
 Run from /MVSCE with the DASDs at DASD/*.
 """
@@ -37,7 +46,9 @@ import ftplib
 import json
 import os
 import re
+import secrets
 import socket
+import string
 import subprocess
 import sys
 import time
@@ -56,6 +67,7 @@ USER = 'IBMUSER'
 PASSWORD = 'SYS1'
 
 LOGFILE = '/tmp/hercules-build.log'
+PRINTER = '/MVSCE/printers/prt00e.txt'    # JES2 PRINTER1, class A
 
 # (xmit file, job name, target load library)
 MODULES = [
@@ -96,8 +108,8 @@ FTPD_PROC = """\
 //HASPACE1 DD  DISP=SHR,DSN=SYS1.HASPACE,UNIT=3350,VOL=SER=SPOOL1
 """
 
-JOBCARD = """//{name:<8} JOB (TSO),'{title}',CLASS=A,MSGCLASS=H,
-//             MSGLEVEL=(1,1),REGION=0M,USER={user},PASSWORD={pw}"""
+JOBCARD = """//{name:<8} JOB (TSO),'{title}',CLASS=A,MSGCLASS=A,
+//             MSGLEVEL=(1,1),REGION=0M,USER={user},PASSWORD={pw}{group}"""
 
 # BREXX, the way MVS/CE's own MVP procedure runs it
 BREXX_DDS = """//TSOLIB   DD DSN=BREXX.CURRENT.RXLIB,DISP=SHR
@@ -115,8 +127,10 @@ def log(msg):
     print(f'[setup {elapsed:6.1f}s] {msg}', flush=True)
 
 
-def jobcard(name, title):
-    return JOBCARD.format(name=name, title=title[:20], user=USER, pw=PASSWORD)
+def jobcard(name, title, group=None):
+    """group: run connected to that RAKF group instead of the default one."""
+    return JOBCARD.format(name=name, title=title[:20], user=USER, pw=PASSWORD,
+                          group=f',\n//             GROUP={group}' if group else '')
 
 
 def wait_for_port(port, timeout=60):
@@ -156,9 +170,23 @@ def dump_log_tail(lines=20):
         print(f'    | {l}', flush=True)
 
 
+def dump_printer_tail(lines=60):
+    """The job output: what a condition code alone does not say."""
+    time.sleep(5)   # JES2 prints a job after it has ended
+    try:
+        with open(PRINTER, 'r', errors='replace') as f:
+            content = [l.rstrip() for l in f.read().splitlines() if l.strip()]
+    except FileNotFoundError:
+        return
+    log(f'  printer tail ({PRINTER}):')
+    for l in content[-lines:]:
+        print(f'    > {l}', flush=True)
+
+
 def fail(herc, msg):
     log(f'ERROR: {msg}')
     dump_log_tail()
+    dump_printer_tail()
     herc.kill()
     sys.exit(1)
 
@@ -217,8 +245,8 @@ def run_job(herc, name, submit, steps):
     log(f'  {name} ended, ' + ', '.join(f'{s} {ccs[s]}' for s in steps))
 
 
-def brexx_job(name, title, rexx):
-    return f"""{jobcard(name, title)}
+def brexx_job(name, title, rexx, group=None):
+    return f"""{jobcard(name, title, group)}
 //REXX     EXEC PGM=IKJEFT01,PARM='BREXX EXEC'
 //EXEC     DD DATA,DLM=##
 {rexx.strip()}
@@ -347,6 +375,100 @@ EXIT 0
             ['REXX'])
 
 
+def setup_rakf(herc):
+    """RAKF users for FTPD and HTTPD, and FTPAUTH.
+
+    Both servers drop from STC (operations authority) to their own user in
+    group USER at startup; without that user RAKF answers RAKF0004 and the
+    server keeps running as STC (FTPD004W / HTTPD004W). ftpd's
+    docs/FTPD_RAKF_SETUP.md and httpd's docs/installation.md (section 8).
+
+    MVS/CE runs RAKF 2: users are added with ADDUSER (the password goes to
+    SYS1.SECURE.SHADOW), profiles are edited in SYS1.SECURE.CNTL(PROFILES).
+    Both need the RAKFADM group; IBMUSER's default group ADMIN has no
+    access to SYS1.SECURE.*.
+
+    Both sign on with PASSCHK=NO and never use the password, so it is
+    random and not kept. FTPAUTH is granted to ADMIN only, so the FTPD
+    user itself cannot log in over FTP. One step per user, so each
+    ADDUSER has a condition code of its own.
+    """
+    log('Setting up RAKF (users FTPD and HTTPD, facility FTPAUTH)...')
+    alphabet = string.ascii_uppercase + string.digits
+    pws = {u: secrets.choice(string.ascii_uppercase)
+              + ''.join(secrets.choice(alphabet) for _ in range(7))
+           for u in ('FTPD', 'HTTPD')}
+    steps = ''.join(f"""//ADD{u:<5} EXEC PGM=IKJEFT01,REGION=4096K
+//SYSPRINT DD  SYSOUT=*
+//SYSTERM  DD  SYSOUT=*
+//SYSIN    DD  DUMMY
+//SYSTSPRT DD  SYSOUT=*
+//SYSTSIN  DD  *
+ ADDUSER {u} PASSWORD({pw}) DFLTGRP(USER) NOOPERATIONS
+/*
+""" for u, pw in pws.items())
+    jcl = f"""{jobcard('ADDUSERS', 'ADDUSER FTPD HTTPD', 'RAKFADM')}
+{steps}"""
+    run_job(herc, 'ADDUSERS', lambda: submit_ascii(jcl),
+            [f'ADD{u}' for u in pws])
+
+    # Ascending order on columns 1-60 with the universal (blank group)
+    # line first, or RAKF rejects the whole table.
+    rexx = """
+/* REXX - insert FTPAUTH into SYS1.SECURE.CNTL(PROFILES), in order */
+ADDRESS TSO
+"ALLOC F(PRF) DA('SYS1.SECURE.CNTL(PROFILES)') SHR REUSE"
+"EXECIO * DISKR PRF (STEM IN. FINIS"
+new.1 = LEFT('FACILITYFTPAUTH', 60) || 'NONE'
+new.2 = LEFT(LEFT('FACILITYFTPAUTH', 52) || 'ADMIN', 60) || 'READ'
+new.0 = 2
+o = 0; k = 1
+DO i = 1 TO in.0
+  IF POS('FACILITYFTPAUTH ', in.i) = 1 THEN EXIT 8
+  DO WHILE k <= new.0 & LEFT(in.i, 60) >> LEFT(new.k, 60)
+    o = o + 1; out.o = new.k; k = k + 1
+  END
+  o = o + 1; out.o = in.i
+END
+DO WHILE k <= new.0
+  o = o + 1; out.o = new.k; k = k + 1
+END
+out.0 = o
+"EXECIO" out.0 "DISKW PRF (STEM OUT. FINIS"
+"FREE F(PRF)"
+EXIT 0
+"""
+    run_job(herc, 'FTPAUTH',
+            lambda: submit_ascii(brexx_job('FTPAUTH', 'FTPAUTH', rexx,
+                                           'RAKFADM')),
+            ['REXX'])
+
+    since = len(read_log())
+    console(herc, 'RAKFLOAD', 'S RAKFUSER', 'S RAKFPROF')
+    for msg in ('RAKFUIDS4  USER TABLE UPDATED', 'RAKFPROF7  RAKF PROFILES UPDATED'):
+        if not wait_for_string(msg, START_TIMEOUT, since):
+            fail(herc, f'RAKF reload: {msg} not seen')
+        log(f'  {msg}')
+    return pws['FTPD']
+
+
+def check_identity(herc, name, since, ready):
+    """No RAKF0004 for the server, no <name>004W, and <name>002I present.
+
+    Checked once <ready> has appeared, so the startup lines are all in.
+    """
+    if not wait_for_string(ready, START_TIMEOUT, since):
+        fail(herc, f'{name} not ready ({ready} not seen)')
+    started = read_log()[since:]
+    if f'USER:{name}' in started:
+        fail(herc, f'{name} start reports RAKF0004 for USER:{name}')
+    if f'{name}004W' in started:
+        fail(herc, f'{name} start reports {name}004W')
+    if f'{name}002I AUTHORIZED BY' not in started:
+        fail(herc, f'no {name}002I AUTHORIZED BY line')
+    log(f'  {name}: no RAKF0004, no {name}004W, {name}002I present')
+
+
 def console(herc, name, *commands):
     rexx = 'ADDRESS CONSOLE\n' + '\n'.join(f"'{c}'" for c in commands)
     run_job(herc, name, lambda: submit_ascii(brexx_job(name, name, rexx)),
@@ -369,12 +491,19 @@ def start_stc(herc, name, msgid, expected):
         fail(herc, f'{name} is not at level {expected}')
 
 
-def check_ftpd(herc, expected):
+def check_ftpd(herc, expected, since, ftpd_pw):
     """FTPD001I READY only follows a successful bind; then log in for real."""
     want = f'FTPD001I FTPD {expected.upper()} READY' if expected else 'FTPD001I'
-    if not wait_for_string(want, START_TIMEOUT):
+    if not wait_for_string(want, START_TIMEOUT, since):
         fail(herc, f'FTPD not ready ({want} not seen)')
     log(f'  {want}')
+    started = read_log()[since:]
+    for bad in ('RAKF0004', 'FTPD004W'):
+        if bad in started:
+            fail(herc, f'FTPD start reports {bad}')
+    if 'FTPD004I STC IDENTITY SET TO FTPD/USER' not in started:
+        fail(herc, 'FTPD did not switch to FTPD/USER (no FTPD004I)')
+    log('  FTPD004I STC IDENTITY SET TO FTPD/USER, no RAKF0004/FTPD004W')
     try:
         with ftplib.FTP() as ftp:
             ftp.connect('127.0.0.1', FTP_PORT, timeout=30)
@@ -384,6 +513,17 @@ def check_ftpd(herc, expected):
     except Exception as e:  # noqa: BLE001 - any failure fails the build
         fail(herc, f'FTP login as {USER} failed: {e}')
     log(f'  FTP login as {USER}: {welcome!r}, PWD {pwd!r}')
+    try:
+        with ftplib.FTP() as ftp:
+            ftp.connect('127.0.0.1', FTP_PORT, timeout=30)
+            ftp.login('FTPD', ftpd_pw)
+        fail(herc, 'FTPAUTH let the FTPD user log in')
+    except ftplib.error_perm as e:
+        if not str(e).startswith('530'):
+            fail(herc, f'FTP login as FTPD: unexpected {e}')
+        log(f'  FTP login as FTPD refused: {e}')
+    except Exception as e:  # noqa: BLE001 - any failure fails the build
+        fail(herc, f'FTP login as FTPD failed: {e}')
 
 
 def check_mvsmf(herc, expected):
@@ -443,12 +583,16 @@ def main():
     write_httpprm0(herc)
     write_ftpd_proc(herc)
     add_autostart(herc)
+    ftpd_pw = setup_rakf(herc)
 
     start_stc(herc, 'UFSD', 'UFSD000I', os.environ.get('UFSD_VERSION'))
+    since = len(read_log())
     start_stc(herc, 'HTTPD', 'HTTPD000I', os.environ.get('HTTPD_VERSION'))
+    check_identity(herc, 'HTTPD', since, 'HTTPD001I')
     check_mvsmf(herc, os.environ.get('MVSMF_VERSION'))
+    since = len(read_log())
     start_stc(herc, 'FTPD', 'FTPD000I', os.environ.get('FTPD_VERSION'))
-    check_ftpd(herc, os.environ.get('FTPD_VERSION'))
+    check_ftpd(herc, os.environ.get('FTPD_VERSION'), since, ftpd_pw)
 
     log('Stopping FTPD, HTTPD and UFSD, purging the spool...')
     console(herc, 'STOPSTC', 'P FTPD', 'P HTTPD', 'P UFSD')
@@ -483,6 +627,10 @@ def main():
             herc.wait(timeout=30)
         except subprocess.TimeoutExpired:
             herc.kill()
+
+    # the printed job output (and the ADDUSER card) stays out of the image
+    for name in os.listdir(os.path.dirname(PRINTER)):
+        open(os.path.join(os.path.dirname(PRINTER), name), 'w').close()
 
     log('Done: UFSD, HTTPD, mvsMF and FTPD refreshed and set to autostart.')
 
