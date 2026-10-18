@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
-# mvsce-target: disposable MVS/CE instances from the mvsce image.
+# mvsce-target: disposable MVS 3.8j instances from the mvsce or tk5 image.
 #
-#   mvsce-target up [NAME] [--port N ...] [--wait SEC] [--pull always|missing]
+#   mvsce-target up [NAME] [--dist mvsce|tk5] [--port N ...] [--wait SEC]
+#                   [--pull always|missing]
 #   mvsce-target status NAME
 #   mvsce-target down NAME
 #   mvsce-target list
 #   mvsce-target reap [--older-than MIN]
+#
+# --dist picks the image: mvsce (MVS/CE, the default) or tk5 (TK5, the
+# products installed with SMP), ghcr.io/mvslovers/<dist>:latest. What the
+# target says -- user, password, HLQ, the volume and classes for mbt, the
+# published ports -- comes from the image's io.mvslovers.target.* labels,
+# so each image carries its own (MVS/CE: IBMUSER/SYS1, TK5: HERC01/CUL8TR).
 #
 # Global options (before or after the command):
 #   --host SSH     run against the Docker on that ssh host; nothing has to be
@@ -34,7 +41,8 @@
 # wait for TSO or FTP (see the README for when those are ready).
 #
 # Environment: MVSCE_TARGET_HOST (= --host), MVSCE_TARGET_RUNTIME,
-# MVSCE_TARGET_IMAGE, MVSCE_TARGET_MAX (instances per host, default 3),
+# MVSCE_TARGET_DIST (= --dist), MVSCE_TARGET_IMAGE (any image, overrides
+# --dist), MVSCE_TARGET_MAX (instances per host, default 3),
 # MVSCE_TARGET_MEMORY / MVSCE_TARGET_CPUS (Apple's container: per VM,
 # default 512M / 2), MVSCE_TARGET_CPU_SHARES (Docker: --cpu-shares,
 # default 2, the lowest, which leans a contended CPU towards whatever
@@ -42,24 +50,27 @@
 
 set -euo pipefail
 
-IMAGE=${MVSCE_TARGET_IMAGE:-ghcr.io/mvslovers/mvsce:latest}
+DIST=${MVSCE_TARGET_DIST:-mvsce}
+IMAGE=${MVSCE_TARGET_IMAGE:-}
 MAX=${MVSCE_TARGET_MAX:-3}
 VM_MEMORY=${MVSCE_TARGET_MEMORY:-512M}
 VM_CPUS=${MVSCE_TARGET_CPUS:-2}
 CPU_SHARES=${MVSCE_TARGET_CPU_SHARES:-2}
 LABEL=io.mvslovers.target
-MVS_USER=IBMUSER
-MVS_PASS=SYS1
-MVS_HLQ=IBMUSER
-# Volume for mbt's data sets: WORK00, as on the MVS/CE stands. A 5-cylinder
-# allocation on it ends CC 0000 in the image.
-VOLUME=WORK00
-JOBCLASS=A
-MSGCLASS=H          # held, so the job output stays readable through mvsMF
-HERC_USER=hercules  # the HTTP console defaults of MVS/CE's /mvs.sh
-HERC_PASS=hercules
-# guest port:name, always published
-PORTS="8080:mvsmf 3270:tn3270 2121:ftp 8888:hercules 3505:reader_ascii 3506:reader_ebcdic"
+
+# The target profile, from the image's io.mvslovers.target.* labels (see
+# load_profile). These are MVS/CE's, for an mvsce image built before the
+# labels existed: MSGCLASS H is held, so job output stays readable through
+# mvsMF; WORK00 takes a 5-cylinder allocation; hercules/hercules are the
+# HTTP console defaults of MVS/CE's /mvs.sh. PORTS: guest port:name, all
+# published.
+profile_defaults() {
+    MVS_USER=IBMUSER MVS_PASS=SYS1 MVS_HLQ=IBMUSER VOLUME=WORK00
+    JOBCLASS=A MSGCLASS=H HERC_USER=hercules HERC_PASS=hercules
+    PORTS="8080:mvsmf 3270:tn3270 2121:ftp 8888:hercules 3505:reader_ascii 3506:reader_ebcdic"
+    PDIST=mvsce
+}
+profile_defaults
 
 die() { echo "mvsce-target: $*" >&2; exit 1; }
 
@@ -87,11 +98,11 @@ while [ $# -gt 0 ]; do
         --wait) wait_sec=${2:?--wait needs seconds}; shift 2 ;;
         --pull) pull=${2:?--pull needs always or missing}; shift 2 ;;
         --older-than) older=${2:?--older-than needs minutes}; shift 2 ;;
+        --dist) DIST=${2:?--dist needs mvsce or tk5}; shift 2 ;;
         --port)
             p=${2:?--port needs a number}
             [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1 ] && [ "$p" -le 65535 ] \
                 || die "invalid port '$p'"
-            case " $PORTS " in *" $p:"*) die "port $p is published anyway" ;; esac
             case " $extra " in *" $p "*) ;; *) extra="${extra:+$extra }$p" ;; esac
             shift 2 ;;
         -h|--help) usage 0 ;;
@@ -104,6 +115,11 @@ set -- "${args[@]+"${args[@]}"}"
 cmd=${1:-}
 [ -n "$cmd" ] || usage 1
 shift
+case "$DIST" in
+    mvsce|tk5) ;;
+    *) die "--dist must be mvsce or tk5, not '$DIST'" ;;
+esac
+IMAGE=${IMAGE:-ghcr.io/mvslovers/$DIST:latest}
 
 # Remote mode: run this very script on the ssh host, under Docker. The
 # address printed for the target is the one this machine reaches it by.
@@ -207,10 +223,16 @@ rt_state() {
     fi
 }
 
-# the port other machines reach guest port $2 of instance $1 on
+# the port other machines reach guest port $2 of instance $1 on; empty
+# when the image does not publish it (tk5 has no 3506)
 rt_port() {
+    case " $PORTS $(rt_label "$1" "$LABEL.ports") " in
+        *" $2:"*|*" $2 "*) ;;
+        *) return 0 ;;
+    esac
     if [ "$runtime" = docker ]; then
-        docker port "$1" "$2/tcp" 2>/dev/null | sed -n 's/^0\.0\.0\.0://p' | head -n 1
+        { docker port "$1" "$2/tcp" 2>/dev/null || true; } \
+            | sed -n 's/^0\.0\.0\.0://p' | head -n 1
     else
         echo "$2"
     fi
@@ -252,6 +274,44 @@ for v in d.get("variants", []):
     fi
 }
 
+img_labels() {      # all labels of the local image $1, key=value
+    if [ "$runtime" = docker ]; then
+        docker image inspect \
+            --format '{{range $k, $v := .Config.Labels}}{{$k}}={{$v}}{{"\n"}}{{end}}' \
+            "$1" 2>/dev/null
+    else
+        container image inspect "$1" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+d = d[0] if isinstance(d, list) else d
+for v in d.get("variants", []):
+    if v.get("platform", {}).get("architecture") in ("arm64", "aarch64"):
+        for k, val in (v["config"]["config"].get("Labels") or {}).items():
+            print(f"{k}={val}")
+        break
+'
+    fi
+}
+
+# Sets the profile from labels (key=value lines); an image without the
+# target labels keeps the MVS/CE defaults.
+load_profile() {
+    local labels=$1 v
+    profile_defaults
+    lbl() { echo "$labels" | sed -n "s/^$LABEL\.$1=//p" | head -n 1; }
+    [ -n "$(lbl user)" ] || return 0
+    MVS_USER=$(lbl user); MVS_PASS=$(lbl password); MVS_HLQ=$(lbl hlq)
+    v=$(lbl volume); VOLUME=${v:-$VOLUME}
+    v=$(lbl jobclass); JOBCLASS=${v:-$JOBCLASS}
+    v=$(lbl msgclass); MSGCLASS=${v:-$MSGCLASS}
+    HERC_USER=$(lbl hercules-user); HERC_PASS=$(lbl hercules-password)
+    v=$(lbl ports); PORTS=${v:-$PORTS}
+    v=$(lbl dist); PDIST=${v:-$PDIST}
+}
+
 rt_pull() {
     if [ "$runtime" = docker ]; then
         docker pull -q "$IMAGE" >/dev/null
@@ -267,11 +327,13 @@ rt_run() {      # $1 name, $2 instance name; labels and ports from globals
         for p in $extra; do pub+=(-p "0:$p"); done
         docker run -d --rm --name "$1" --cpu-shares "$CPU_SHARES" \
             --label "$LABEL=$2" --label "$LABEL.owner=${SUDO_USER:-$(id -un)}" \
+            --label "$LABEL.dist=$PDIST" \
             --label "$LABEL.created=$(date +%s)" --label "$LABEL.ports=$extra" \
             "${pub[@]}" "$IMAGE" >/dev/null
     else
         container run -d --rm --name "$1" -m "$VM_MEMORY" -c "$VM_CPUS" \
             --label "$LABEL=$2" --label "$LABEL.owner=$(id -un)" \
+            --label "$LABEL.dist=$PDIST" \
             --label "$LABEL.created=$(date +%s)" --label "$LABEL.ports=$extra" \
             "$IMAGE" >/dev/null 2>&1
     fi
@@ -310,6 +372,7 @@ print_target() {
     image=$(rt_image "$c")
     local labels
     labels=$(rt_image_labels "$c")
+    load_profile "$labels"
     ilabel() { echo "$labels" | sed -n "s/^$1=//p" | head -n 1; }
     herc_ref=$(ilabel io.mvslovers.hercules.ref)
     local ports_extra
@@ -320,8 +383,8 @@ print_target() {
     rdr_a=$(rt_port "$c" 3505); rdr_e=$(rt_port "$c" 3506)
 
     if [ "$format" = json ]; then
-        printf '{\n  "name": "%s",\n  "runtime": "%s",\n  "host": "%s",\n' \
-            "$name" "$runtime" "$addr"
+        printf '{\n  "name": "%s",\n  "dist": "%s",\n  "runtime": "%s",\n  "host": "%s",\n' \
+            "$name" "$PDIST" "$runtime" "$addr"
         printf '  "mvsmf_url": "http://%s:%s",\n' "$addr" "$mvsmf"
         printf '  "user": "%s",\n  "password": "%s",\n  "hlq": "%s",\n' \
             "$MVS_USER" "$MVS_PASS" "$MVS_HLQ"
@@ -339,9 +402,10 @@ print_target() {
         done
         printf '\n  },\n  "image": "%s",\n  "versions": {\n' "$image"
         sep=
-        for key in hercules.ref mvsce ufsd httpd mvsmf ftpd; do
+        for key in hercules.ref mvsce tk5 ufsd httpd mvsmf ftpd; do
             case $key in
                 hercules.ref) p=$herc_ref ;;
+                tk5) p=$(ilabel io.mvslovers.tk5.update) ;;
                 *) p=$(ilabel "io.mvslovers.$key.version") ;;
             esac
             printf '%s    "%s": "%s"' "$sep" "${key/./_}" "$p"
@@ -368,11 +432,12 @@ ${pre}MBT_TARGET_HERCULES_URL=http://$addr:$hercules
 ${pre}MBT_TARGET_HERCULES_USER=$HERC_USER
 ${pre}MBT_TARGET_HERCULES_PASSWORD=$HERC_PASS
 ${pre}MVSCE_TARGET_NAME=$name
+${pre}MVSCE_TARGET_DIST=$PDIST
 ${pre}MVSCE_TARGET_RUNTIME=$runtime
 ${pre}MVSCE_TARGET_IMAGE=$image
 ${pre}MVSCE_TARGET_HERCULES_REF=$herc_ref
 ${pre}MVSCE_TARGET_FTP_PORT=$ftp
-${pre}MVSCE_TARGET_RDR_PORTS=$rdr_a,$rdr_e
+${pre}MVSCE_TARGET_RDR_PORTS=$rdr_a${rdr_e:+,$rdr_e}
 END
     for p in $ports_extra; do
         echo "${pre}MVSCE_TARGET_PORT_$p=$(rt_port "$c" "$p")"
@@ -407,9 +472,13 @@ cmd_up() {
     [ "$running" -lt "$MAX" ] \
         || die "$running of $MAX instances already running on $(hostname)"
 
-    if [ "$pull" = always ]; then
+    if [ "$pull" = always ] || [ -z "$(img_labels "$IMAGE")" ]; then
         rt_pull || die "cannot pull $IMAGE"
     fi
+    load_profile "$(img_labels "$IMAGE")"
+    for p in $extra; do
+        case " $PORTS " in *" $p:"*) die "port $p is published anyway" ;; esac
+    done
     rt_run "$c" "$name" || die "starting $c failed"
     trap 'stop_target "$c"; exit 130' INT TERM
 
@@ -456,12 +525,13 @@ cmd_down() {
 cmd_list() {
     local c now created
     now=$(date +%s)
-    printf '%-20s %-9s %-8s %7s %-15s %6s %6s %6s  %s\n' \
-        NAME RUNTIME STATE AGE_MIN ADDRESS MVSMF TN3270 FTP OWNER
+    printf '%-20s %-5s %-9s %-8s %7s %-15s %6s %6s %6s  %s\n' \
+        NAME DIST RUNTIME STATE AGE_MIN ADDRESS MVSMF TN3270 FTP OWNER
     for c in $(rt_names); do
         created=$(rt_label "$c" "$LABEL.created")
-        printf '%-20s %-9s %-8s %7s %-15s %6s %6s %6s  %s\n' \
-            "$(rt_label "$c" "$LABEL")" "$runtime" "$(rt_state "$c")" \
+        printf '%-20s %-5s %-9s %-8s %7s %-15s %6s %6s %6s  %s\n' \
+            "$(rt_label "$c" "$LABEL")" "$(rt_label "$c" "$LABEL.dist")" \
+            "$runtime" "$(rt_state "$c")" \
             "$(( (now - ${created:-$now}) / 60 ))" "$(rt_address "$c")" \
             "$(rt_port "$c" 8080)" "$(rt_port "$c" 3270)" "$(rt_port "$c" 2121)" \
             "$(rt_label "$c" "$LABEL.owner")"

@@ -14,7 +14,7 @@ top of it.
 | [`hercules`](#hercules) | SDL-Hyperion S/370 emulator — base image | published, multi-arch |
 | [`mvs-dev`](#mvs-dev) | Headless development container | published, amd64 |
 | [`mvsce`](#mvsce) | MVS/CE + UFSD + HTTPD + mvsMF + FTPD, for CI and disposable test instances | published, multi-arch |
-| [`tk5`](#tk5) | TK5 (minimal configuration) + UFSD + HTTPD + mvsMF + FTPD, installed with SMP | in progress, `:dev` |
+| [`tk5`](#tk5) | TK5 (minimal configuration) + UFSD + HTTPD + mvsMF + FTPD, installed with SMP | published, multi-arch |
 
 All images are published to `ghcr.io/mvslovers/<name>` and are public.
 
@@ -373,10 +373,14 @@ inside the container only.
 
 ### Disposable test instances: `mvsce-target`
 
-`mvsce/mvsce-target` starts an instance, waits until mvsMF answers
-and prints it as an mbt 3 environment target; `down` removes it again,
-completely. It runs the instance in one of two places, and prints the same
-target either way:
+`mvsce/mvsce-target` starts an instance of `mvsce` (MVS/CE, the default) or,
+with `--dist tk5`, of `tk5`, waits until mvsMF answers and prints it as an
+mbt 3 environment target; `down` removes it again, completely. What the
+target says -- user, password, HLQ, the volume and classes for mbt, the
+published ports -- comes from the image's `io.mvslovers.target.*` labels, so
+each image carries its own; an `mvsce` image built before those labels gets
+the MVS/CE values below. It runs the instance in one of two places, and
+prints the same target either way:
 
 | Where | How | Address and ports |
 |-------|-----|-------------------|
@@ -387,7 +391,7 @@ target either way:
 `MVSCE_TARGET_RUNTIME=docker|container` forces the local runtime.
 
 ```bash
-eval "$(mvsce/mvsce-target up --host mvsdev)"   # or: up (locally)
+eval "$(mvsce/mvsce-target up --host mvsdev)"   # or: up (locally); --dist tk5 for TK5
 mbt target ping env --tso --wait 60     # TSO is up ~1.5 s after mvsMF
 mbt test --mvs --target env
 mvsce/mvsce-target down "$MVSCE_TARGET_NAME" --host mvsdev
@@ -395,26 +399,26 @@ mvsce/mvsce-target down "$MVSCE_TARGET_NAME" --host mvsdev
 
 | Command | Does |
 |---------|------|
-| `up [NAME] [--port N ...] [--wait SEC] [--pull always\|missing]` | start, wait for the authenticated `fn=version` (default 120 s), print the target; on failure print the log tail and remove the instance |
+| `up [NAME] [--dist mvsce\|tk5] [--port N ...] [--wait SEC] [--pull always\|missing]` | start, wait for the authenticated `fn=version` (default 120 s), print the target; on failure print the log tail and remove the instance |
 | `status NAME` | print the target of a running instance |
 | `down NAME` | stop it and check that it is gone |
-| `list` | instances on that host, with address, ports, age and owner |
+| `list` | instances on that host, with distribution, address, ports, age and owner |
 | `reap [--older-than MIN]` | remove instances older than MIN minutes (default 240) |
 
 The output is `export` lines by default, `.env` lines with `--env`, JSON
 with `--json`:
 
-| Variable | Value |
-|----------|-------|
-| `MBT_TARGET_MVSMF_URL` | `http://<address>:<port of 8080>` |
-| `MBT_TARGET_MVSMF_USER` / `_PASSWORD` | `IBMUSER` / `SYS1` |
-| `MBT_TARGET_HLQ` | `IBMUSER` |
-| `MBT_TARGET_VOLUME` | `WORK00` |
-| `MBT_TARGET_JOBCLASS` / `_MSGCLASS` | `A` / `H` (held, readable through mvsMF) |
-| `MBT_TARGET_TN3270_HOST` / `_PORT` / `_USER` / `_PASSWORD` | the TN3270 console, `IBMUSER` / `SYS1` |
-| `MBT_TARGET_HERCULES_URL` / `_USER` / `_PASSWORD` | the Hercules web console, `hercules` / `hercules` |
-| `MVSCE_TARGET_NAME`, `_RUNTIME`, `_IMAGE`, `_HERCULES_REF` | the instance, `docker` or `container`, the image by digest, the Hercules commit |
-| `MVSCE_TARGET_FTP_PORT`, `_RDR_PORTS` | FTPD, and the ASCII/EBCDIC card readers |
+| Variable | `mvsce` | `tk5` |
+|----------|---------|-------|
+| `MBT_TARGET_MVSMF_URL` | `http://<address>:<port of 8080>` | the same |
+| `MBT_TARGET_MVSMF_USER` / `_PASSWORD` | `IBMUSER` / `SYS1` | `HERC01` / `CUL8TR` |
+| `MBT_TARGET_HLQ` | `IBMUSER` | `HERC01` |
+| `MBT_TARGET_VOLUME` | `WORK00` | `WORK01` |
+| `MBT_TARGET_JOBCLASS` / `_MSGCLASS` | `A` / `H` (held, readable through mvsMF) | `A` / `H` (TK5 prints and purges class A at once) |
+| `MBT_TARGET_TN3270_HOST` / `_PORT` / `_USER` / `_PASSWORD` | the TN3270 console, `IBMUSER` / `SYS1` | `HERC01` / `CUL8TR` |
+| `MBT_TARGET_HERCULES_URL` / `_USER` / `_PASSWORD` | the Hercules web console, `hercules` / `hercules` | no login |
+| `MVSCE_TARGET_NAME`, `_DIST`, `_RUNTIME`, `_IMAGE`, `_HERCULES_REF` | the instance, `mvsce` or `tk5`, `docker` or `container`, the image by digest, the Hercules commit | |
+| `MVSCE_TARGET_FTP_PORT`, `_RDR_PORTS` | FTPD, and the ASCII/EBCDIC card readers | FTPD, the ASCII reader (TK5 has no EBCDIC one) |
 | `MVSCE_TARGET_PORT_<N>` | for each `--port N`: where guest port N is reachable |
 
 `--port N` (repeatable) makes another guest port reachable, for a server
@@ -429,7 +433,8 @@ At most three instances run per host (`MVSCE_TARGET_MAX`); under Apple's
 below), which is what the three is for. Each carries
 the label `io.mvslovers.target=<name>` and leaves nothing behind (Docker:
 `--rm` with its anonymous volumes; Apple's `container`: `--rm`, it creates
-no volumes). `MVSCE_TARGET_IMAGE` selects another image, e.g. `:dev`.
+no volumes). `MVSCE_TARGET_IMAGE` selects any other image, e.g. `:dev`, and
+overrides `--dist` (`MVSCE_TARGET_DIST`).
 
 Under Apple's `container` each instance is a VM of its own, `512M` and 2
 CPUs by default (`MVSCE_TARGET_MEMORY`, `MVSCE_TARGET_CPUS`). Measured on
@@ -470,6 +475,18 @@ Unlike stock MVS/CE the image runs Hercules with **one CPU** (`NUMCPU 1`):
 with two, the IPL occasionally stalled around the second CPU. Start the
 container with `-e MVSCE_NUMCPU=2` to get two back.
 
+**Shutdown.** `SYS2.JCLLIB(SHUTFAST)` (or `SHUTDOWN`, with 5 minutes of
+warnings) shuts MVS down and ends the container: measured with the
+servers running, 61 s from submitting SHUTFAST through mvsMF to the
+container's exit. Stock MVS/CE's `SCRIPTS/SHUTDOWN.RC` did neither here:
+it stops TSO and VTAM but not UFSD, HTTPD and FTPD, so JES2 never reached
+`$HASP099` and the shutdown stopped after `HALT NET`; and its `poweroff` is
+armed on a `SIGP Stop` only a second CPU produces. The image adds
+`P FTPD` / `P HTTPD` / `P UFSD` (one console line per pause: of two lines
+typed within a second, MVS acts on the second only) and a `poweroff` on the
+wait state CCC. The build shuts down that way with the servers up, so it
+fails if the shutdown does not stop them.
+
 The `mvsce IPL sample` workflow (manual dispatch) starts the image
 on a dozen runners and reports per start whether mvsMF came up, how
 Hercules ended and on which CPU — the diagnostic for
@@ -477,7 +494,7 @@ Hercules ended and on which CPU — the diagnostic for
 
 ## tk5
 
-**Image:** `ghcr.io/mvslovers/tk5` (`:dev` only for now)
+**Image:** `ghcr.io/mvslovers/tk5` (public; `mvsce-target up --dist tk5` starts one)
 
 [TK5](https://www.prince-webdesign.nl/tk5) — Rob Prins' MVS 3.8j turnkey
 system — in its **minimal configuration**, with UFSD, HTTPD, mvsMF and FTPD
@@ -549,11 +566,42 @@ reader 3505, Hercules web console 8888 (TK5's default is 8038). Users are
 TK5's own: `HERC01`/`CUL8TR` (ADMIN, RAKFADM), `HERC02`/`CUL8TR`,
 `HERC03`/`PASS4U`, `HERC04`/`PASS4U`, `IBMUSER`/`IBMPASS`.
 
-Measured on mvsdev (4 cores, idle): TSO (`IKT005I`) 44 s after `docker run`,
-the servers READY 2 s later, mvsMF answering at 47 s. About 12 s of that are
-the pauses in TK5's `scripts/ipl.rc` (`IPL_PAUSE`, 4 s each), and 30 s are
-TK5's own start timer: JES2's start member `SYS1.JES2PARM(STARTMIN)` is
-`$TA,I=30,'$VS,''F BSPPILOT,SCRIPT=STARTMIN'''`.
+**Start.** TK5 runs its start script `SYS1.PARMLIB(STARTMIN)` (NET, JES2's
+devices, the servers) from a JES2 automatic command, `$TA,I=30` in
+`SYS1.JES2PARM(STARTMIN)`, 30 s after JES2's start; JES2 takes no interval
+below 30 (`I=1` and `I=10`: `$HASP000 … INVALID SPECIFICATION`). The image's
+`HERCULES_RC`, `local_conf/ipl.rc`, sets one Hercules automatic operator rule
+and then calls TK5's `scripts/ipl.rc` unchanged: on `BSPSETPF ENDED`
+(BSPPILOT is up) it enters `F BSPPILOT,SCRIPT=STARTMIN`; the script's first
+command, `$CA,ALL`, cancels the waiting automatic command, so it runs once.
+With the servers that early TK5 showed MVS/CE's SRM hold (TK5's `IEAIPS00`
+is MVS/CE's), so the image raises domain 1's minimum MPL to 10 here as well,
+and `IPL_PAUSE=1` shortens the pauses in `scripts/ipl.rc`.
+
+Measured on mvsdev (4 cores, idle, three starts): TSO 8 s after
+`docker run`, mvsMF 10.3–10.6 s, FTP greeting 11.1–11.5 s; stock TK5 in its
+minimal configuration took 44 s to TSO and 47 s to mvsMF.
+
+**Shutdown.** `SYS2.JCLLIB(SHUTDOWN)` (TSO: `SHUTDOWN`) runs TK5's Hercules
+`scripts/shutdown`: 30 s, then BSPPILOT's `SHUTNOW` script, `$PJES2`,
+`Z EOD`, `QUIESCE` and `poweroff`, and the container ends. TK5's shutdown
+scripts (`SYS1.PARMLIB(SDMIN*)`, `(SDSTD*)`) stop TSO and VTAM but not our
+servers, which kept JES2 from `$HASP099`; the image adds `IF FTPD` /
+`COM P FTPD` / `ENDIF` (and HTTPD, then UFSD) to all six. Measured with the
+servers running: 100 s from submitting `SHUTDOWN` through mvsMF to the
+container's exit. The build shuts down that way too.
+
+**Traps** (found running OFTPD tests in this image):
+
+- mvsMF puts the submitting user on the job card: a job with `USER=HERC02`
+  submitted as `HERC01` runs as `HERC01`. To run as another user, submit as
+  that user.
+- `HERC02` is in group `ADMIN` like `HERC01`; the ordinary users are
+  `HERC03` and `HERC04` (group `USER`).
+- A started task's `SYSOUT=*` output is printed and purged at once (class
+  A); only a held class such as `H` keeps it readable.
+- BREXX is `BREXX.V2R5M3.RXLIB`. A REXX `/*` comment in column 1 ends an
+  in-stream `DD *`; use `DD DATA,DLM=@@`.
 
 ## Build
 

@@ -79,7 +79,7 @@ jobs:
       # Start the image and read back what runs: the Hercules commit and the
       # mvsMF level must match the labels the build set, and FTPD has to
       # greet right away (with domain 1's minimum MPL of 1 the SRM held it
-      # about 30 s after the IPL, ftpd#176).
+      # about 30 s after the IPL, ftpd#176), and SHUTFAST has to end it all.
       - name: Start and check
         env:
           IMAGE: ${{ env.PUSH == 'true' && format('{0}@{1}', env.IMAGE_NAME, steps.push.outputs.digest) || 'mvsce:test' }}
@@ -116,7 +116,19 @@ jobs:
           sha=$(echo "$banner" | sed -n 's/.*-g\([0-9a-f]\{7,\}\).*/\1/p')
           case "$ref" in "$sha"*) [ -n "$sha" ] ;; *) echo "Hercules g$sha, label $ref"; exit 1 ;; esac
           case "$v" in *"\"version\": \"$mvsmf\""*) ;; *) echo "mvsMF does not report $mvsmf"; exit 1 ;; esac
-          docker stop mvs >/dev/null
+          # SHUTFAST, the servers still up, has to end MVS and the container
+          t0=$(date +%s)
+          curl -s -u IBMUSER:SYS1 -X PUT -H 'Content-Type: text/plain' -H 'X-IBM-Intrdr-Mode: TEXT' \
+            --data-binary $'//SHUTFAST JOB (JOB),\'SHUTFAST\',CLASS=A,MSGCLASS=A\n//SHUTFAST EXEC SHUTDOWN,TYPE=\'SHUTFAST\'\n' \
+            'http://localhost:8080/zosmf/restjobs/jobs' >/dev/null
+          for i in $(seq 1 180); do
+            [ "$(docker inspect -f '{{.State.Status}}' mvs 2>/dev/null)" = running ] || break
+            sleep 1
+          done
+          echo "container ended $(( $(date +%s) - t0 ))s after SHUTFAST"
+          if [ "$(docker inspect -f '{{.State.Status}}' mvs 2>/dev/null)" = running ]; then
+            docker logs --tail 40 mvs 2>&1; echo "SHUTFAST did not end the container"; docker stop mvs >/dev/null; exit 1
+          fi
 
       - name: Record digest
         if: env.PUSH == 'true'

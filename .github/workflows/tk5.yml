@@ -70,7 +70,7 @@ jobs:
 
       # Start the image and read back what runs: the Hercules commit and
       # the mvsMF level must match the labels the build set, TSO has to be
-      # up and FTPD has to greet.
+      # up, FTPD has to greet, and TK5's own shutdown has to end it all.
       - name: Start and check
         env:
           IMAGE: ${{ env.PUSH == 'true' && format('{0}@{1}', env.IMAGE_NAME, steps.push.outputs.digest) || 'tk5:test' }}
@@ -103,7 +103,19 @@ jobs:
           echo "$banner"
           sha=$(echo "$banner" | sed -n 's/.*-g\([0-9a-f]\{7,\}\).*/\1/p')
           case "$ref" in "$sha"*) [ -n "$sha" ] ;; *) echo "Hercules g$sha, label $ref"; exit 1 ;; esac
-          docker stop mvs >/dev/null
+          # TK5's SHUTDOWN, the servers still up, has to end MVS and the container
+          t0=$(date +%s)
+          curl -s -u HERC01:CUL8TR -X PUT -H 'Content-Type: text/plain' -H 'X-IBM-Intrdr-Mode: TEXT' \
+            --data-binary $'//SHUTDOWN JOB (JOB),\'SHUTDOWN\',CLASS=A,MSGCLASS=A\n//SHUTDOWN EXEC SHUTDOWN\n' \
+            'http://localhost:8080/zosmf/restjobs/jobs' >/dev/null
+          for i in $(seq 1 240); do
+            [ "$(docker inspect -f '{{.State.Status}}' mvs 2>/dev/null)" = running ] || break
+            sleep 1
+          done
+          echo "container ended $(( $(date +%s) - t0 ))s after SHUTDOWN"
+          if [ "$(docker inspect -f '{{.State.Status}}' mvs 2>/dev/null)" = running ]; then
+            docker logs --tail 40 mvs 2>&1; echo "SHUTDOWN did not end the container"; docker stop mvs >/dev/null; exit 1
+          fi
 
       - name: Record digest
         if: env.PUSH == 'true'

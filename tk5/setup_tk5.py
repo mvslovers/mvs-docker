@@ -24,14 +24,18 @@ the way its README describes, by its own jobs:
      SYS1.PARMLIB, the UFS disks UFSD.ROOT, UFSD.SCRATCH (/tmp) and
      HERC01.UFSHOME (/u/herc01), the RAKF users HTTPD and FTPD in group
      USER, and S UFSD / S HTTPD / S FTPD in the BSPPILOT scripts TK5
-     starts its tasks from, SYS1.PARMLIB(STARTMIN) and (STARTSTD).
+     starts its tasks from, SYS1.PARMLIB(STARTMIN) and (STARTSTD), the
+     matching P commands in its shutdown scripts SYS1.PARMLIB(SDMIN*,
+     SDSTD*), and
+     domain 1's minimum MPL in SYS1.PARMLIB(IEAIPS00) from 1 to 10.
      No APF entries: on TK5 the servers authorise themselves through
      RAKF's SVC 244, as their READMEs describe.
   5. Starts all three and checks what runs: the banners against the
      versions, the identity switches (HTTPD004I, FTPD004I), the
      readiness messages, an FTP login, FTPAUTH refusing the FTPD user,
      /zosmf/test?fn=version against MVSMF_VERSION, and the SMP inventory.
-  6. Shuts TK5 down with its own scripts (scripts/shutdown).
+  6. Shuts TK5 down with its own scripts (scripts/shutdown), the servers
+     still running: BSPPILOT's shutdown scripts now stop them (step 4).
 
 Job output goes to the class A printer, prt/prt00e.txt; a failed build
 shows its tail. Printers and logs are emptied at the end.
@@ -573,6 +577,20 @@ def setup_rakf(herc):
     log('  RAKFUIDS4  USER TABLE UPDATED')
 
 
+def raise_dmn1_mpl(herc):
+    """DMN=1,CNSTR=(1,50,1) -> (10,50,1) in SYS1.PARMLIB(IEAIPS00).
+
+    TK5's IEAIPS00 has MVS/CE's value, and with a minimum MPL of 1 the
+    SRM keeps the swappable domain-1 started tasks swapped out for a while
+    after the IPL: with the start script run early (local_conf/ipl.rc),
+    FTPD's first greeting came 20 s after the connect. The same change as
+    mvsce's, measured there by ftpd (ftpd#176).
+    """
+    log('Domain 1 minimum MPL 1 -> 10 in SYS1.PARMLIB(IEAIPS00)...')
+    copy_member(herc, 'IPSDMN1', 'SYS1.PARMLIB(IEAIPS00)', 'SYS1.PARMLIB(IEAIPS00)',
+                subs=[('DMN=1,CNSTR=(1,50,1) ', 'DMN=1,CNSTR=(10,50,1)')])
+
+
 def add_autostart(herc):
     """S UFSD / S HTTPD / S FTPD in TK5's own startup scripts.
 
@@ -663,26 +681,61 @@ def check_inventory(herc, fmids):
     log(f'  {", ".join(fmids)}: REC APP ACC in CDS and ACDS')
 
 
+def stop_servers_at_shutdown(herc):
+    """P FTPD / P HTTPD / P UFSD in TK5's BSPPILOT shutdown scripts.
+
+    F BSPPILOT,SHUTNOW (and SHUTFAST, SHUTDOWN) run SYS1.PARMLIB(SDMINNOW,
+    SDMINFST, SDMIN) or the SDSTD* ones, through aliases INISDxxx renews at
+    every IPL. They stop TSO, VTAM and JES2's devices but know nothing of
+    our servers, and with those still up JES2 never says $HASP099 ALL
+    AVAILABLE FUNCTIONS COMPLETE: the shutdown stopped after BSPPILOT
+    ENDED. FTPD and HTTPD go first, UFSD after them; IF skips a server
+    that is not running.
+    """
+    log('P FTPD / P HTTPD / P UFSD into the BSPPILOT shutdown scripts...')
+    lines = [('COM P TSO', l) for l in (
+        'IF FTPD', 'COM P FTPD', 'ENDIF', 'IF HTTPD', 'COM P HTTPD', 'ENDIF',
+        'WAIT 3', 'IF UFSD', 'COM P UFSD', 'ENDIF', 'WAIT 3')]
+    for m in ('SDMINNOW', 'SDMINFST', 'SDMIN', 'SDSTDNOW', 'SDSTDFST', 'SDSTD'):
+        copy_member(herc, f'SD{m[2:]}'[:8], f'SYS1.PARMLIB({m})',
+                    f'SYS1.PARMLIB({m})', inserts=lines)
+    # BSPPILOT reads SHUTNOW etc. through aliases, and a rewritten member
+    # moves: the aliases still name the old text until INISDMIN renews
+    # them, which TK5 does at every IPL. The build shuts down without one.
+    since = len(read_log())
+    console(herc, 'S INISDMIN')
+    if not wait_for_string('$HASP395 INISDMIN', START_TIMEOUT, since):
+        fail(herc, 'S INISDMIN did not end')
+    log('  shutdown aliases renewed (INISDMIN)')
+
+
 def shutdown(herc):
-    log('Stopping the servers, purging the spool...')
-    console(herc, 'P FTPD', 'P HTTPD', 'P UFSD')
-    time.sleep(10)
+    """TK5's own shutdown, with the servers still running: the test that
+    the shutdown scripts stop them."""
+    log('Purging the spool...')
     console(herc, '$PJ1-9999', '$PS1-9999', '$PT1-9999')
     time.sleep(5)
-    log("Shutting TK5 down (its scripts/shutdown)...")
+    log("Shutting TK5 down (its scripts/shutdown), the servers still up...")
     since = len(read_log())
     hercules_cmd(herc, 'script scripts/shutdown')
-    if not wait_for_string('IEE334I', 180, since):
-        fail(herc, 'shutdown: no IEE334I (HALT EOD)')
-    time.sleep(10)
-    log('MVS quiesced, quitting Hercules')
-    hercules_cmd(herc, 'quit')
+    # 'IEE334I HALT', not 'IEE334I': the echo of scripts/shutdown's own
+    # "hao tgt IEE334I" has that too.
+    if not wait_for_string('IEE334I HALT', 300, since):
+        fail(herc, 'shutdown: no IEE334I HALT EOD SUCCESSFUL; servers not stopped?')
+    for name in ('FTPD', 'HTTPD', 'UFSD'):
+        if f'$HASP395 {name}' not in read_log()[since:]:
+            fail(herc, f'shutdown: {name} was not stopped')
+    log('  FTPD, HTTPD and UFSD stopped by the shutdown script, IEE334I HALT EOD')
+    # scripts/poweroff (armed on HHC00809I, the CPU's wait state after
+    # QUIESCE) ends in quit; Hercules then exits only at EOF on stdin.
+    if not wait_for_string('HHC01420I', 120, since):
+        fail(herc, 'shutdown: Hercules did not begin its own shutdown (no HHC01420I)')
+    log('  scripts/poweroff: Hercules shutting down (HHC01420I)')
     herc.stdin.close()
     try:
         herc.wait(timeout=120)
     except subprocess.TimeoutExpired:
-        log('  Hercules did not exit, killing it')
-        herc.kill()
+        fail(herc, 'Hercules did not exit after its shutdown')
 
 
 def main():
@@ -709,6 +762,8 @@ def main():
     configure(herc)
     setup_rakf(herc)
     add_autostart(herc)
+    stop_servers_at_shutdown(herc)
+    raise_dmn1_mpl(herc)
 
     log('Starting the servers...')
     start_stc(herc, 'UFSD', 'UFSD001I', 'UFSD000I', versions['ufsd'])

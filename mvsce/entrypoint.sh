@@ -8,7 +8,7 @@
 # (mvslovers/brexx370#277). This follows the Hercules log and the console
 # hardcopy (/logs/mvslog.txt, device 015) and reports how Hercules ended.
 #
-# It also keeps Hercules' stdin open. In --daemon (NoUI) mode Hercules
+# It also keeps Hercules' stdin open until Hercules shuts down. In --daemon (NoUI) mode Hercules
 # reads stdin as a script after the rc file, and once that reaches EOF it
 # shuts down unless a CPU happens to be started at that very moment
 # (impl.c, "We come here only if ... we reached EOF on stdin"). A
@@ -47,10 +47,25 @@ echo "[*] Host: $(nproc) CPUs, ${cpu:-unknown CPU}, kernel $(uname -r)"
 
 # -F keeps retrying until the files exist and survives /mvs.sh truncating
 # hercules.log; tail prints a '==> file <==' header whenever it switches.
-tail -n +1 -F /logs/hercules.log /logs/mvslog.txt 2>/dev/null &
+tail -n +1 -F /logs/hercules.log /logs/mvslog.txt 2>/dev/null 3>&- &
 tailpid=$!
 
-/mvs.sh <&3
+# Hercules (a742398074) quits only at EOF on stdin, also after `quit`, so a
+# shutdown that ends in quit (MVS/CE's SHUTDOWN.RC, TK5's poweroff) left
+# the container running. Hence stdin is the FIFO read-only, the shell's fd
+# 3 is the writer that keeps it from EOF, and once Hercules has begun its
+# own shutdown (HHC01420I in the log) the shell lets go of fd 3.
+mkdir -p /logs && : > /logs/hercules.log    # no HHC01420I of an earlier run
+/mvs.sh < /tmp/hercules.stdin 3>&- &     # 3>&-: or it is a writer itself
+herc=$!
+while kill -0 "$herc" 2>/dev/null; do
+    if grep -q 'HHC01420I' /logs/hercules.log 2>/dev/null; then
+        exec 3>&-
+        break
+    fi
+    sleep 1
+done
+wait "$herc"
 rc=$?
 
 sleep 2     # let tail pick up the last lines
