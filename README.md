@@ -274,10 +274,13 @@ gets the deploy and the tests.
 
 **Image:** `ghcr.io/mvslovers/mvsce` (public)
 
-**Formerly `mvsce-builder`.** `ghcr.io/mvslovers/mvsce-builder` gets the same
-`:dev` and `:latest` until its users have moved, and is then frozen at its
-last level; `mvsce-builder/mvsce-target` is a link to `mvsce/mvsce-target`
-for as long.
+**Formerly `mvsce-builder` — the old name is a transition only.**
+`ghcr.io/mvslovers/mvsce-builder` gets the same `:dev` and `:latest` while the
+mvslovers projects move to `mvsce`, and `mvsce-builder/mvsce-target` is a
+link to `mvsce/mvsce-target` for as long. Then both go: the old image stays
+pullable at its last level but gets no updates, so anything still naming it
+silently tests an aging image. Use `ghcr.io/mvslovers/mvsce` and
+`mvsce/mvsce-target`.
 
 ### What's inside
 
