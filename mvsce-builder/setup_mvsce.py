@@ -201,6 +201,28 @@ def brexx_job(name, title, rexx):
 """
 
 
+def check_hercules(herc, expected):
+    """Check the Hercules that is running against HERCULES_REF.
+
+    The banner reads 'HHC01413I Hercules version <v>-g<sha>'. The DASDs are
+    compressed CCKD, so a build without zlib or bzip2 cannot read them;
+    only the startup lists the features ('HHC01417I With    ZLIB support'),
+    --version does not.
+    """
+    if not wait_for_string('HHC01413I', 60):
+        fail(herc, 'no Hercules version banner (HHC01413I)')
+    time.sleep(3)   # the feature list follows the banner
+    log_text = read_log()
+    banner = next(l for l in log_text.splitlines() if 'HHC01413I' in l)
+    log(f'  {banner.strip()}')
+    m = re.search(r'-g([0-9a-f]{7,})', banner)
+    if expected and not (m and expected.startswith(m.group(1))):
+        fail(herc, f'Hercules is not at {expected}')
+    for feature in ('ZLIB support', 'CCKD BZIP2 support'):
+        if not re.search(r'HHC01417I With\s+' + feature, log_text):
+            fail(herc, f'Hercules was built without {feature}')
+
+
 def install_modules(herc, xmit, name, target):
     """RECEIVE an XMIT into a temporary library, copy it over target."""
     with open(xmit, 'rb') as f:
@@ -330,9 +352,15 @@ def main():
             sys.exit(1)
 
     log('Starting Hercules...')
+    # stdin stays open: at EOF on stdin a --daemon Hercules shuts down
+    # unless a CPU happens to be started (see entrypoint.sh), and the
+    # shutdown below types 'quit' into it.
     herc = subprocess.Popen(
         ['hercules', '-f', 'conf/local.cnf', '-r', 'conf/mvsce.rc', '--daemon'],
-        stdout=open(LOGFILE, 'w'), stderr=subprocess.STDOUT, cwd='/MVSCE')
+        stdin=subprocess.PIPE, stdout=open(LOGFILE, 'w'),
+        stderr=subprocess.STDOUT, cwd='/MVSCE')
+
+    check_hercules(herc, os.environ.get('HERCULES_REF'))
 
     log('Waiting for MVS IPL ($HASP426)...')
     if not wait_for_string('$HASP426'):
@@ -364,12 +392,21 @@ def main():
     time.sleep(5)
 
     # MVS/CE's own shutdown (SYS2.JCLLIB(SHUTFAST)): stops JES2, runs
-    # Z EOD and QUIESCE, then quits Hercules, so the DASDs baked into the
-    # layer are consistent.
+    # Z EOD and QUIESCE, so the DASDs baked into the layer are consistent.
+    # MVS then sits in disabled wait CCC and Hercules is told to quit.
     log('Shutting down MVS (SHUTFAST)...')
+    since = len(read_log())
     submit_ascii(f"""{jobcard('SHUTFAST', 'SHUTFAST')}
 //SHUTFAST EXEC SHUTDOWN,TYPE='SHUTFAST'
 """)
+    if wait_for_string('disabled wait state 000A0000 00000CCC',
+                       SHUTDOWN_TIMEOUT, since):
+        log('MVS quiesced (wait CCC), quitting Hercules')
+        herc.stdin.write(b'quit\n')
+        # Hercules finishes its shutdown, but the process only exits once
+        # stdin reaches EOF (measured with a742398074: 'Hercules terminated'
+        # and then 300 s of nothing until SIGTERM).
+        herc.stdin.close()
     try:
         herc.wait(timeout=SHUTDOWN_TIMEOUT)
         log('Hercules has quit')

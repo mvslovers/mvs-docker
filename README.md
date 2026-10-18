@@ -22,8 +22,9 @@ All images are published to `ghcr.io/mvslovers/<name>` and are public.
 > `mvs-dev` is built by CI and reproducible, but `amd64`-only for now — its
 > `c2asm370` cross-compiler has no native arm64 build yet. It does **not** use
 > the `hercules` base image (it is a toolchain that talks to a *remote* MVS, not
-> an MVS runtime). `mvsce-builder` is still built locally with `make`,
-> `amd64`-only (its base image is), and slated to move to GitHub Actions.
+> an MVS runtime). `mvsce-builder` is still built locally with `make` and
+> therefore `amd64`-only for now; its base image `mainframed767/mvsce` is
+> multi-arch (`amd64` + `arm64`), so a CI build can add `arm64`.
 
 ---
 
@@ -283,13 +284,27 @@ Use cases:
 | Component | Version | Where |
 |-----------|---------|-------|
 | [MVS/CE](https://github.com/MVS-sysgen/sysgen) (`mainframed767/mvsce`) | 3.0.0 | base image |
-| [UFSD](https://github.com/mvslovers/ufsd) | 1.4.0-dev | `MVSLOVER.UFSD.LOADLIB` |
-| [HTTPD](https://github.com/mvslovers/httpd) | 4.2.0-dev | `HTTPD.LINKLIB` |
-| [mvsMF](https://github.com/mvslovers/mvsmf) | 1.2.0-dev | `HTTPD.LINKLIB` |
+| [Hercules](https://github.com/SDL-Hercules-390/hyperion) (SDL-Hyperion, `develop`) | `a742398074` (4.10.0.11783) | `/home/hercules/herctest/herc4x`, replacing MVS/CE's |
+| [UFSD](https://github.com/mvslovers/ufsd) | 1.4.0 | `MVSLOVER.UFSD.LOADLIB` |
+| [HTTPD](https://github.com/mvslovers/httpd) | 4.3.0 | `HTTPD.LINKLIB` |
+| [mvsMF](https://github.com/mvslovers/mvsmf) | 1.3.0 | `HTTPD.LINKLIB` |
 
 The versions are `ARG`s in `mvsce-builder/Dockerfile`
-(`MVSCE_VERSION`, `UFSD_VERSION`, `HTTPD_VERSION`, `MVSMF_VERSION`) and are
-recorded as image labels (`io.mvslovers.<component>.version`).
+(`MVSCE_VERSION`, `HERCULES_REF`, `UFSD_VERSION`, `HTTPD_VERSION`,
+`MVSMF_VERSION`) and are recorded as image labels
+(`io.mvslovers.<component>.version`, `io.mvslovers.hercules.ref`).
+
+**Hercules is rebuilt, not taken from MVS/CE.** `mainframed767/mvsce:3.0.0`
+carries a Hercules from March 2026 (`g5081b9ea`) without the 3215-C console
+fix ([hyperion#889](https://github.com/SDL-Hercules-390/hyperion/pull/889)),
+which can hang the IPL, and without the X'75' TCP/IP fixes the servers rely
+on (#864, #870, #875, #885). A build stage on Debian trixie, MVS/CE's own
+runtime, builds Hyperion at `HERCULES_REF` with a portable `-O3` into the
+same prefix, so MVS/CE's `/mvs.sh` runs it unchanged. The build fails unless
+`hercules --version` names `HERCULES_REF` and every binary and module finds
+its libraries; the build-time IPL checks the running banner again. The
+stage goes away once `mainframed767/mvsce` itself carries a Hercules at or
+after that commit.
 
 MVS/CE 3.0.0 already installs UFSD, HTTPD and mvsMF through MVP, but does not
 start them, and its MVP packages predate fixes mvsMF depends on (e.g. listing
@@ -318,6 +333,12 @@ docker run -d --rm --name mvs-build \
 # Wait for MVS to IPL and HTTPD to come up, then check the mvsMF level
 curl -u IBMUSER:SYS1 'http://localhost:8080/zosmf/test?fn=version'
 ```
+
+mvsMF answers before TSO is up: on an idle 4-CPU host the authenticated
+`fn=version` returned 200 about 2 s after `docker run`, and `IKT005I TCAS IS
+INITIALIZED` followed about 1.5 s later. Wait for each separately.
+`/zosmf/info` answers 401 without credentials, so a readiness probe has to
+authenticate.
 
 `docker logs` carries the Hercules log and the console hardcopy
 (`/logs/hercules.log`, `/logs/mvslog.txt`), preceded by the host CPU and
