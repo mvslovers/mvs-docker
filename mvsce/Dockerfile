@@ -115,6 +115,19 @@ LABEL org.opencontainers.image.source="https://github.com/mvslovers/mvs-docker" 
       io.mvslovers.ufsd.version="${UFSD_VERSION}" \
       io.mvslovers.httpd.version="${HTTPD_VERSION}" \
       io.mvslovers.mvsmf.version="${MVSMF_VERSION}" \
-      io.mvslovers.ftpd.version="${FTPD_VERSION}"
+      io.mvslovers.ftpd.version="${FTPD_VERSION}" \
+      io.mvslovers.target.dist="mvsce" \
+      io.mvslovers.target.user="IBMUSER" \
+      io.mvslovers.target.password="SYS1" \
+      io.mvslovers.target.hlq="IBMUSER" \
+      io.mvslovers.target.volume="WORK00" \
+      io.mvslovers.target.jobclass="A" \
+      io.mvslovers.target.msgclass="H" \
+      io.mvslovers.target.hercules-user="hercules" \
+      io.mvslovers.target.hercules-password="hercules" \
+      io.mvslovers.target.ports="8080:mvsmf 3270:tn3270 2121:ftp 8888:hercules 3505:reader_ascii 3506:reader_ebcdic"
 
+# io.mvslovers.target.*: what mvsce-target prints for an instance (user,
+# HLQ, the volume and classes for mbt, the published guest ports); the
+# tk5 image carries its own.
 EXPOSE 2121 3270 3505 3506 8080 8888

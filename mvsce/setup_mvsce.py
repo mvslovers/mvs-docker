@@ -35,7 +35,9 @@ This script:
      /zosmf/test?fn=version against MVSMF_VERSION.
      A build that installed nothing therefore fails instead of publishing
      the previous level.
-  6. Purges the spool and shuts MVS down with MVS/CE's own SHUTFAST.
+  6. Adds P FTPD / P HTTPD / P UFSD to MVS/CE's SCRIPTS/SHUTDOWN.RC, purges
+     the spool and shuts MVS down with MVS/CE's own SHUTFAST, the servers
+     still running, so the build fails if the shutdown does not stop them.
 
 The jobs print their output (MSGCLASS=A) to printers/prt00e.txt, whose
 tail a failed build shows; the file is emptied at the end.
@@ -159,6 +161,21 @@ def wait_for_string(target, timeout=HERCULES_TIMEOUT, since=0):
     start = time.time()
     while time.time() - start < timeout:
         if target in read_log()[since:]:
+            return True
+        time.sleep(2)
+    return False
+
+
+def wait_for_line(prefix, timeout=HERCULES_TIMEOUT, since=0):
+    """Wait for a log line that starts (after its timestamp) with prefix.
+
+    Unlike wait_for_string, not fooled by Hercules echoing a hao rule that
+    names the same text ("HHC01603I hao tgt HHC00809I ...").
+    """
+    pat = re.compile(r'^\d\d:\d\d:\d\d ' + re.escape(prefix), re.M)
+    start = time.time()
+    while time.time() - start < timeout:
+        if pat.search(read_log()[since:]):
             return True
         time.sleep(2)
     return False
@@ -580,6 +597,55 @@ def check_mvsmf(herc, expected):
         fail(herc, f'mvsMF reports {info.get("version")}, expected {expected}')
 
 
+SHUTDOWN_RC = '/MVSCE/SCRIPTS/SHUTDOWN.RC'
+# One command per pause: of two lines typed into the 3215-C console within
+# the same second, MVS acts on the second only (measured: /P FTPD then
+# /P HTTPD stopped HTTPD alone, /P FTPD then /D T only displayed the time).
+STOP_SERVERS = """* Stopping FTPD, HTTPD and UFSD (added by mvslovers/mvs-docker)
+/P FTPD
+pause 1
+/P HTTPD
+pause 3
+/P UFSD
+pause 3
+"""
+
+
+# SHUTDOWN.RC's poweroff (stopall, sysclear, quit) is armed on
+# "HHC00814I Processor CP00/CP01: SIGP Stop", which only a second CPU
+# produces; with this image's NUMCPU 1 MVS stopped in wait CCC and
+# Hercules ran on. TK5 arms its poweroff on the wait state itself; this
+# one only on MVS/CE's wait CCC after QUIESCE, not on a crash's wait code.
+POWEROFF_RULE = """hao tgt HHC00809I Processor CP00: disabled wait state 000A0000 00000CCC
+hao cmd script SCRIPTS/poweroff
+"""
+
+
+def patch_shutdown_rc():
+    """P FTPD / P HTTPD / P UFSD in MVS/CE's SCRIPTS/SHUTDOWN.RC.
+
+    SHUTDOWN and SHUTFAST end in this Hercules script. It stops TSO,
+    VTAM and JES2's devices but not the servers, and with those still up
+    JES2 never says $HASP099 ALL AVAILABLE FUNCTIONS COMPLETE, which is
+    what its hao rule waits for to $PJES2: the shutdown stopped after
+    HALT NET. The stops go in once logons are refused, FTPD and HTTPD
+    before UFSD; a server that is not running only answers IEE341I.
+    """
+    with open(SHUTDOWN_RC, newline='') as f:
+        s = f.read()
+    anchor = '/MODIFY TSO,USERMAX=0\npause 2\n'
+    rules = 'hao cmd script SCRIPTS/poweroff\n'
+    if s.count(anchor) != 1 or s.count(rules) != 2:
+        log(f'ERROR: {SHUTDOWN_RC}: not the expected script')
+        sys.exit(1)
+    s = s.replace(anchor, anchor + STOP_SERVERS)
+    i = s.rindex(rules) + len(rules)
+    s = s[:i] + POWEROFF_RULE + s[i:]
+    with open(SHUTDOWN_RC, 'w', newline='') as f:
+        f.write(s)
+    log(f'{SHUTDOWN_RC}: P FTPD / P HTTPD / P UFSD and a 1-CPU poweroff rule added')
+
+
 def main():
     global START_TIME
     START_TIME = time.time()
@@ -588,6 +654,7 @@ def main():
         if not os.path.exists(xmit):
             log(f'ERROR: {xmit} not found')
             sys.exit(1)
+    patch_shutdown_rc()
 
     log('Starting Hercules...')
     # stdin stays open: at EOF on stdin a --daemon Hercules shuts down
@@ -631,9 +698,8 @@ def main():
     start_stc(herc, 'FTPD', 'FTPD000I', os.environ.get('FTPD_VERSION'))
     check_ftpd(herc, os.environ.get('FTPD_VERSION'), since, ftpd_pw)
 
-    log('Stopping FTPD, HTTPD and UFSD, purging the spool...')
-    console(herc, 'STOPSTC', 'P FTPD', 'P HTTPD', 'P UFSD')
-    time.sleep(10)
+    # The servers stay up: SHUTFAST has to stop them (patch_shutdown_rc).
+    log('Purging the spool...')
     console(herc, 'PURGESPL', '$PS1-9999', '$PT1-9999', '$PJ1-9999')
     time.sleep(5)
 
@@ -645,14 +711,19 @@ def main():
     submit_ascii(f"""{jobcard('SHUTFAST', 'SHUTFAST')}
 //SHUTFAST EXEC SHUTDOWN,TYPE='SHUTFAST'
 """)
-    if wait_for_string('disabled wait state 000A0000 00000CCC',
-                       SHUTDOWN_TIMEOUT, since):
-        log('MVS quiesced (wait CCC), quitting Hercules')
-        herc.stdin.write(b'quit\n')
-        # Hercules finishes its shutdown, but the process only exits once
-        # stdin reaches EOF (measured with a742398074: 'Hercules terminated'
-        # and then 300 s of nothing until SIGTERM).
-        herc.stdin.close()
+    if not wait_for_line('HHC00809I Processor CP00: disabled wait state 000A0000 00000CCC',
+                         SHUTDOWN_TIMEOUT, since):
+        fail(herc, 'SHUTFAST did not reach wait CCC (servers not stopped?)')
+    for name in ('FTPD', 'HTTPD', 'UFSD'):
+        if f'$HASP395 {name}' not in read_log()[since:]:
+            fail(herc, f'SHUTFAST did not stop {name}')
+    log('  FTPD, HTTPD and UFSD stopped by SHUTDOWN.RC')
+    log('MVS quiesced (wait CCC), quitting Hercules')
+    herc.stdin.write(b'quit\n')
+    # Hercules finishes its shutdown, but the process only exits once
+    # stdin reaches EOF (measured with a742398074: 'Hercules terminated'
+    # and then 300 s of nothing until SIGTERM).
+    herc.stdin.close()
     try:
         herc.wait(timeout=SHUTDOWN_TIMEOUT)
         log('Hercules has quit')

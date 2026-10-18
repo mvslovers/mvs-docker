@@ -113,20 +113,32 @@ COPY --from=system /tk5 /tk5
 # mvsce uses, so a client needs no second set: TN3270 3270, Hercules web
 # console 8888 (TK5: 8038), ASCII card reader 3505.
 #
+# IPL_PAUSE=1 instead of TK5's 4: the pauses between the steps of
+# scripts/ipl.rc; measured on mvsdev, mvsMF answers 7 s earlier and the IPL
+# runs the same.
+#
 # TK5's minimal configuration (TK5 Introduction and User Manual, "Start
 # MVS with a minimal configuration"): REP101A=specific, CMD101A=02 make
 # ipl.rc answer IEA101A with R 00,CMD=02, so TCAM (TP), MF1, JRP and
 # SNASOL do not start and the NCPs are not loaded; TSO comes up through
 # VTAM as usual. The image is a test system for our own servers, not a
 # TK5 showcase. REP101A=default at run time gives the full system back.
-ENV HERCULES_RC=scripts/ipl.rc \
+#
+# HERCULES_RC is local_conf/ipl.rc, which sets one Hercules automatic
+# operator rule and calls TK5's scripts/ipl.rc: TK5's start script runs
+# as soon as BSPPILOT is up, not from JES2's $TA,I=30 (JES2 takes no
+# interval below 30). TK5_START_SCRIPT names that script, STARTMIN here;
+# the entrypoint makes it STARTSTD for REP101A=default.
+ENV HERCULES_RC=local_conf/ipl.rc \
     CNSLPORT=3270 \
     HTTPPORT=8888 \
     RDRPORT=3505 \
     NUMCPU=1 \
     MAXCPU=1 \
     REP101A=specific \
-    CMD101A=02
+    CMD101A=02 \
+    IPL_PAUSE=1 \
+    TK5_START_SCRIPT=STARTMIN
 
 WORKDIR /tk5
 
@@ -136,6 +148,9 @@ ADD https://github.com/mvslovers/httpd/releases/download/v${HTTPD_VERSION}/httpd
 ADD https://github.com/mvslovers/mvsmf/releases/download/v${MVSMF_VERSION}/mvsmf-${MVSMF_VERSION}-dist.tar.gz /tmp/dist/
 ADD https://github.com/mvslovers/ftpd/releases/download/v${FTPD_VERSION}/ftpd-${FTPD_VERSION}-dist.tar.gz /tmp/dist/
 COPY setup_tk5.py /tmp/setup_tk5.py
+# Around TK5's scripts/ipl.rc: runs TK5's start script as soon as BSPPILOT
+# is up instead of 30 s after JES2 (see the file). The build uses it too.
+COPY ipl.rc /tk5/local_conf/ipl.rc
 
 # IPLs TK5, installs and configures the four, checks what runs and shuts
 # TK5 down; the changed DASDs are baked into this layer.
@@ -156,6 +171,16 @@ LABEL org.opencontainers.image.source="https://github.com/mvslovers/mvs-docker" 
       io.mvslovers.ufsd.version="${UFSD_VERSION}" \
       io.mvslovers.httpd.version="${HTTPD_VERSION}" \
       io.mvslovers.mvsmf.version="${MVSMF_VERSION}" \
-      io.mvslovers.ftpd.version="${FTPD_VERSION}"
+      io.mvslovers.ftpd.version="${FTPD_VERSION}" \
+      io.mvslovers.target.dist="tk5" \
+      io.mvslovers.target.user="HERC01" \
+      io.mvslovers.target.password="CUL8TR" \
+      io.mvslovers.target.hlq="HERC01" \
+      io.mvslovers.target.volume="WORK01" \
+      io.mvslovers.target.jobclass="A" \
+      io.mvslovers.target.msgclass="H" \
+      io.mvslovers.target.hercules-user="" \
+      io.mvslovers.target.hercules-password="" \
+      io.mvslovers.target.ports="8080:mvsmf 3270:tn3270 2121:ftp 8888:hercules 3505:reader_ascii"
 
 EXPOSE 2121 3270 3505 8080 8888

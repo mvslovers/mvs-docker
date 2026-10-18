@@ -1,0 +1,14 @@
+#**********************************************************************
+#*** tk5 image: Hercules rc file (HERCULES_RC), around TK5's own
+#*** scripts/ipl.rc
+#***
+#*** TK5 runs its start script SYS1.PARMLIB(STARTMIN/STARTSTD) -- NET,
+#*** TSO, our servers -- from a JES2 automatic command, $TA,I=30 in
+#*** SYS1.JES2PARM, 30 s after JES2's start; JES2 takes no interval below
+#*** 30. Here the script runs as soon as BSPPILOT has initialised (it has
+#*** run BSPSETPF). Its first command, $CA,ALL, cancels the automatic
+#*** command, so it runs once.
+#**********************************************************************
+hao tgt BSPSETPF +ENDED
+hao cmd /F BSPPILOT,SCRIPT=${TK5_START_SCRIPT}
+script scripts/ipl.rc
