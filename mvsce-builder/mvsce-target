@@ -92,6 +92,8 @@ while [ $# -gt 0 ]; do
             case " $extra " in *" $p "*) ;; *) extra="${extra:+$extra }$p" ;; esac
             shift 2 ;;
         -h|--help) usage 0 ;;
+        -*\ *) die "unknown option '$1': one argument with a space in it (a shell variable that was not split?)" ;;
+        -*) die "unknown option '$1'" ;;
         *) args+=("$1"); shift ;;
     esac
 done
