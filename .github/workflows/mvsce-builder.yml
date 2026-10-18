@@ -95,9 +95,15 @@ jobs:
             sleep 1
           done
           echo "after $(( $(date +%s) - start ))s: $v"
-          banner=$(docker logs mvs 2>&1 | grep -m 1 HHC01413I || true)
+          # from the log file itself: `docker logs` follows it with tail -F
+          # and can lag behind (seen on arm64: empty 2 s after the start)
+          for i in $(seq 1 30); do
+            banner=$(docker exec mvs grep -m 1 HHC01413I /logs/hercules.log || true)
+            [ -n "$banner" ] && break
+            sleep 1
+          done
           echo "$banner"
-          docker logs mvs 2>&1 | grep -E 'UFSD000I|HTTPD000I|FTPD000I' | head -n 3
+          docker exec mvs grep -E 'UFSD000I|HTTPD000I|FTPD000I' /logs/hercules.log | head -n 3
           sha=$(echo "$banner" | sed -n 's/.*-g\([0-9a-f]\{7,\}\).*/\1/p')
           case "$ref" in "$sha"*) [ -n "$sha" ] ;; *) echo "Hercules g$sha, label $ref"; exit 1 ;; esac
           case "$v" in *"\"version\": \"$mvsmf\""*) ;; *) echo "mvsMF does not report $mvsmf"; exit 1 ;; esac
