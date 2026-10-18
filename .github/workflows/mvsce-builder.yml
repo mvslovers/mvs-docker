@@ -112,8 +112,10 @@ jobs:
       - name: Record digest
         if: env.PUSH == 'true'
         run: |
+          # artifact file names may not contain ':', so without "sha256:"
           mkdir -p digests
-          touch "digests/${{ steps.push.outputs.digest }}"
+          d="${{ steps.push.outputs.digest }}"
+          touch "digests/${d#sha256:}"
           ls digests
 
       - uses: actions/upload-artifact@v6
@@ -150,5 +152,5 @@ jobs:
           ls
           [ "$(ls | wc -l)" -eq 2 ] || { echo "expected two digests"; exit 1; }
           docker buildx imagetools create -t ${{ env.IMAGE_NAME }}:dev \
-            $(for d in *; do echo "${{ env.IMAGE_NAME }}@$d"; done)
+            $(for d in *; do echo "${{ env.IMAGE_NAME }}@sha256:$d"; done)
           docker buildx imagetools inspect ${{ env.IMAGE_NAME }}:dev
