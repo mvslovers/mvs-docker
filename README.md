@@ -13,7 +13,7 @@ top of it.
 |-------|---------|--------|
 | [`hercules`](#hercules) | SDL-Hyperion S/370 emulator — base image | published, multi-arch |
 | [`mvs-dev`](#mvs-dev) | Headless development container | published, amd64 |
-| [`mvsce-builder`](#mvsce-builder) | MVS/CE + UFSD + HTTPD + mvsMF for CI | published, amd64 |
+| [`mvsce-builder`](#mvsce-builder) | MVS/CE + UFSD + HTTPD + mvsMF + FTPD for CI | published, amd64 |
 | `mvstk4-test` / `mvstk5-test` / `mvsce-test` | Test images | planned |
 
 All images are published to `ghcr.io/mvslovers/<name>` and are public.
@@ -269,8 +269,8 @@ with MVS via the mvsMF REST API.
 ## mvsce-builder
 
 Build image for CI pipelines. Contains a fully operational MVS/CE system
-with UFSD, HTTPD and mvsMF (z/OSMF-compatible REST API) installed and
-started at IPL.
+with UFSD, HTTPD, mvsMF (z/OSMF-compatible REST API) and FTPD installed
+and started at IPL.
 
 **Image:** `ghcr.io/mvslovers/mvsce-builder` (public)
 
@@ -288,10 +288,11 @@ Use cases:
 | [UFSD](https://github.com/mvslovers/ufsd) | 1.4.0 | `MVSLOVER.UFSD.LOADLIB` |
 | [HTTPD](https://github.com/mvslovers/httpd) | 4.3.0 | `HTTPD.LINKLIB` |
 | [mvsMF](https://github.com/mvslovers/mvsmf) | 1.3.0 | `HTTPD.LINKLIB` |
+| [FTPD](https://github.com/mvslovers/ftpd) | 1.2.0 | `MVSLOVER.FTPD.LOADLIB` |
 
 The versions are `ARG`s in `mvsce-builder/Dockerfile`
 (`MVSCE_VERSION`, `HERCULES_REF`, `UFSD_VERSION`, `HTTPD_VERSION`,
-`MVSMF_VERSION`) and are recorded as image labels
+`MVSMF_VERSION`, `FTPD_VERSION`) and are recorded as image labels
 (`io.mvslovers.<component>.version`, `io.mvslovers.hercules.ref`).
 
 **Hercules is rebuilt, not taken from MVS/CE.** `mainframed767/mvsce:3.0.0`
@@ -306,20 +307,24 @@ its libraries; the build-time IPL checks the running banner again. The
 stage goes away once `mainframed767/mvsce` itself carries a Hercules at or
 after that commit.
 
-MVS/CE 3.0.0 already installs UFSD, HTTPD and mvsMF through MVP, but does not
-start them, and its MVP packages predate fixes mvsMF depends on (e.g. listing
+MVS/CE 3.0.0 already installs UFSD, HTTPD, mvsMF and FTPD through MVP, but
+does not start them, and its MVP packages predate fixes mvsMF depends on (e.g. listing
 the spool of a job with many steps,
 [mvsmf#374](https://github.com/mvslovers/mvsmf/issues/374)). The build keeps
-everything MVP set up (procedures, `UFSDPRM0`, the UFS disks) and only:
+everything MVP set up (procedures, `UFSDPRM0`, `FTPDPRM0`, the UFS disks) and
+only:
 
-- replaces the modules in the two load libraries with the pinned releases,
+- replaces the modules in the three load libraries with the pinned releases,
 - writes `SYS2.PARMLIB(HTTPPRM0)` with the z/OSMF routes as mvsMF documents
   them (`/zosmf/*` is `AUTH=TOKEN`),
-- adds `S UFSD` / `S HTTPD` to `SYS1.PARMLIB(COMMND00)`.
+- rewrites `SYS2.PROCLIB(FTPD)` with the `HASPACE1` DD that FTPD's JES
+  interface needs (MVP's procedure has only `HASPCKPT`),
+- adds `S UFSD` / `S HTTPD` / `S FTPD` to `SYS1.PARMLIB(COMMND00)`.
 
-It then starts both and **fails unless** the `UFSD000I`/`HTTPD000I` banners and
-`/zosmf/test?fn=version` report the pinned versions, so a build that installed
-nothing cannot be published as the new level.
+It then starts all three and **fails unless** the `UFSD000I`/`HTTPD000I`/
+`FTPD000I` banners and `/zosmf/test?fn=version` report the pinned versions,
+`FTPD001I READY` follows and an FTP login as `IBMUSER` succeeds, so a build
+that installed nothing cannot be published as the new level.
 
 ### Usage
 
@@ -339,6 +344,15 @@ mvsMF answers before TSO is up: on an idle 4-CPU host the authenticated
 INITIALIZED` followed about 1.5 s later. Wait for each separately.
 `/zosmf/info` answers 401 without credentials, so a readiness probe has to
 authenticate.
+
+FTPD reports `FTPD001I READY` about 2 s after `docker run`, but does not
+greet its first connection until the `SETPFKEY` started task from
+`COMMND00` has ended, about 30 s after the IPL (`$HASP395 SETPFKEY ENDED`;
+measured twice: greeting 1 s after it). A connection made earlier is
+accepted and then waits. FTPD also logs `FTPD004W RACINIT ENVIR=CREATE FAILED
+RC=28`, because MVS/CE's RAKF has no `FTPD` user; logins still work. Passive
+mode answers with `127,0,0,1` (MVS/CE's `FTPDPRM0`), so data connections work
+inside the container only.
 
 `docker logs` carries the Hercules log and the console hardcopy
 (`/logs/hercules.log`, `/logs/mvslog.txt`), preceded by the host CPU and
@@ -396,6 +410,7 @@ make clean
 
 | Port | Service |
 |------|---------|
+| 2121 | FTPD (control connection; passive data ports are not published) |
 | 3270 | TN3270 (terminal access) |
 | 3505 | JES2 ASCII socket reader |
 | 3506 | JES2 EBCDIC card reader |

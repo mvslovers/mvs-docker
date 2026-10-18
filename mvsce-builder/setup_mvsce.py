@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Refresh UFSD, HTTPD and mvsMF on MVS/CE 3.x and enable their autostart.
+"""Refresh UFSD, HTTPD, mvsMF and FTPD on MVS/CE 3.x, enable their autostart.
 
-MVS/CE 3.0.0 already installs UFSD, HTTPD and mvsMF through MVP, but does
-not start them. The MVP install provides everything this image needs apart
+MVS/CE 3.0.0 already installs UFSD, HTTPD, mvsMF and FTPD through MVP, but
+does not start them. The MVP install provides everything this image needs apart
 from the load modules themselves:
 
   MVSLOVER.UFSD.LOADLIB        UFSD load library (STEPLIB of the UFSD procs)
   HTTPD.LINKLIB                HTTPD load library, mvsMF lives in it too
+  MVSLOVER.FTPD.LOADLIB        FTPD load library
   SYS2.PROCLIB(UFSD,UFSDCLNP)  STC procedures
   SYS2.PROCLIB(HTTPD)          STC procedure, incl. HASPCKPT/HASPACE1
+  SYS2.PARMLIB(FTPDPRM0)       FTPD configuration, port 2121
   SYS2.PARMLIB(UFSDPRM0)       mounts /, /www, /tmp and the user homes
   UFSD.ROOT, HTTPD.WEBROOT,
   UFSD.SCRATCH, *.UFSHOME      the UFS disks
@@ -17,10 +19,12 @@ This script:
 
   1. RECEIVEs the release XMITs from /tmp and IEBCOPYs their members, with
      replace, into the existing load libraries.
-  2. Writes SYS2.PARMLIB(HTTPPRM0) in the form mvsMF documents.
-  3. Adds S UFSD / S HTTPD to SYS1.PARMLIB(COMMND00).
-  4. Starts both and checks what is actually running: the UFSD000I and
-     HTTPD000I banners against UFSD_VERSION / HTTPD_VERSION, and
+  2. Writes SYS2.PARMLIB(HTTPPRM0) in the form mvsMF documents, and
+     SYS2.PROCLIB(FTPD) with the spool DDs FTPD's JES interface needs.
+  3. Adds S UFSD / S HTTPD / S FTPD to SYS1.PARMLIB(COMMND00).
+  4. Starts all three and checks what is actually running: the UFSD000I,
+     HTTPD000I and FTPD000I banners against UFSD_VERSION / HTTPD_VERSION /
+     FTPD_VERSION, FTPD001I READY, an FTP login, and
      /zosmf/test?fn=version against MVSMF_VERSION.
      A build that installed nothing therefore fails instead of publishing
      the previous level.
@@ -29,6 +33,7 @@ This script:
 Run from /MVSCE with the DASDs at DASD/*.
 """
 import base64
+import ftplib
 import json
 import os
 import re
@@ -41,6 +46,7 @@ import urllib.request
 EBCDIC_PORT = 3506
 ASCII_PORT = 3505
 HTTP_PORT = 8080
+FTP_PORT = 2121
 HERCULES_TIMEOUT = 300  # seconds to wait for MVS IPL
 JOB_TIMEOUT = 180       # seconds to wait for a single job
 START_TIMEOUT = 120     # seconds to wait for an STC banner
@@ -56,6 +62,7 @@ MODULES = [
     ('/tmp/ufsd.xmit',  'UFSDRCV',  'MVSLOVER.UFSD.LOADLIB'),
     ('/tmp/httpd.xmit', 'HTTPDRCV', 'HTTPD.LINKLIB'),
     ('/tmp/mvsmf.xmit', 'MVSMFRCV', 'HTTPD.LINKLIB'),
+    ('/tmp/ftpd.xmit',  'FTPDRCV',  'MVSLOVER.FTPD.LOADLIB'),
 ]
 
 # The z/OSMF routes as mvsMF 1.1.0 documents them: the two endpoints that
@@ -68,6 +75,25 @@ DOCROOT=/www
 MOD=MVSMF /zosmf/info                    AUTH=NONE
 MOD=MVSMF /zosmf/services/authenticate   AUTH=NONE
 MOD=MVSMF /zosmf/*                       AUTH=TOKEN
+"""
+
+# MVP's procedure without its comment block, plus the HASPACE1 DD that
+# FTPD's JES interface needs to read the spool (without it: IEC130I
+# HASPACE1 DD STATEMENT MISSING). Both spool DDs as in SYS2.PROCLIB(HTTPD).
+FTPD_PROC = """\
+//FTPD     PROC M=FTPDPRM0,
+//            D='SYS2.PARMLIB'
+//*
+//* FTPD - written by mvsce-builder (mvslovers/mvs-docker)
+//*
+//FTPD     EXEC PGM=FTPD,REGION=8M,TIME=1440
+//STEPLIB  DD  DISP=SHR,DSN=MVSLOVER.FTPD.LOADLIB
+//SYSUDUMP DD  SYSOUT=*
+//STDOUT   DD  SYSOUT=*
+//STDERR   DD  SYSOUT=*
+//FTPDPRM  DD  DSN=&D(&M),DISP=SHR,FREE=CLOSE
+//HASPCKPT DD  DISP=SHR,DSN=SYS1.HASPCKPT,UNIT=3350,VOL=SER=MVS000
+//HASPACE1 DD  DISP=SHR,DSN=SYS1.HASPACE,UNIT=3350,VOL=SER=SPOOL1
 """
 
 JOBCARD = """//{name:<8} JOB (TSO),'{title}',CLASS=A,MSGCLASS=H,
@@ -274,24 +300,43 @@ def write_httpprm0(herc):
     run_job(herc, 'HTTPPRM', lambda: submit_ascii(jcl), ['WRITE'])
 
 
+def write_ftpd_proc(herc):
+    log('Writing SYS2.PROCLIB(FTPD)...')
+    jcl = f"""{jobcard('FTPDPROC', 'FTPD PROC')}
+//WRITE    EXEC PGM=IEBGENER
+//SYSUT1   DD DATA,DLM=@@
+{FTPD_PROC.strip()}
+@@
+//SYSUT2   DD DISP=SHR,DSN=SYS2.PROCLIB(FTPD)
+//SYSPRINT DD SYSOUT=*
+//SYSIN    DD DUMMY
+"""
+    run_job(herc, 'FTPDPROC', lambda: submit_ascii(jcl), ['WRITE'])
+
+
 def add_autostart(herc):
-    log('Adding S UFSD / S HTTPD to SYS1.PARMLIB(COMMND00)...')
+    log('Adding S UFSD / S HTTPD / S FTPD to SYS1.PARMLIB(COMMND00)...')
     rexx = """
-/* REXX - append UFSD and HTTPD autostart to COMMND00 */
+/* REXX - append UFSD, HTTPD and FTPD autostart to COMMND00 */
 ADDRESS TSO
 "ALLOC F(CFG) DA('SYS1.PARMLIB(COMMND00)') SHR REUSE"
 "EXECIO * DISKR CFG (STEM LINE. FINIS"
 have_ufsd = 0
 have_httpd = 0
+have_ftpd = 0
 DO i = 1 TO line.0
   IF POS('S UFSD', line.i) > 0 THEN have_ufsd = 1
   IF POS('S HTTPD', line.i) > 0 THEN have_httpd = 1
+  IF POS('S FTPD', line.i) > 0 THEN have_ftpd = 1
 END
 IF have_ufsd = 0 THEN DO
   n = line.0 + 1; line.n = "COM='S UFSD'"; line.0 = n
 END
 IF have_httpd = 0 THEN DO
   n = line.0 + 1; line.n = "COM='S HTTPD'"; line.0 = n
+END
+IF have_ftpd = 0 THEN DO
+  n = line.0 + 1; line.n = "COM='S FTPD'"; line.0 = n
 END
 "EXECIO" line.0 "DISKW CFG (STEM LINE. FINIS"
 "FREE F(CFG)"
@@ -322,6 +367,23 @@ def start_stc(herc, name, msgid, expected):
     log(f'  {line.strip()}')
     if expected and f'{msgid} {name} {expected.upper()} ' not in line:
         fail(herc, f'{name} is not at level {expected}')
+
+
+def check_ftpd(herc, expected):
+    """FTPD001I READY only follows a successful bind; then log in for real."""
+    want = f'FTPD001I FTPD {expected.upper()} READY' if expected else 'FTPD001I'
+    if not wait_for_string(want, START_TIMEOUT):
+        fail(herc, f'FTPD not ready ({want} not seen)')
+    log(f'  {want}')
+    try:
+        with ftplib.FTP() as ftp:
+            ftp.connect('127.0.0.1', FTP_PORT, timeout=30)
+            welcome = ftp.getwelcome()
+            ftp.login(USER, PASSWORD)
+            pwd = ftp.pwd()
+    except Exception as e:  # noqa: BLE001 - any failure fails the build
+        fail(herc, f'FTP login as {USER} failed: {e}')
+    log(f'  FTP login as {USER}: {welcome!r}, PWD {pwd!r}')
 
 
 def check_mvsmf(herc, expected):
@@ -379,14 +441,17 @@ def main():
         install_modules(herc, xmit, name, target)
 
     write_httpprm0(herc)
+    write_ftpd_proc(herc)
     add_autostart(herc)
 
     start_stc(herc, 'UFSD', 'UFSD000I', os.environ.get('UFSD_VERSION'))
     start_stc(herc, 'HTTPD', 'HTTPD000I', os.environ.get('HTTPD_VERSION'))
     check_mvsmf(herc, os.environ.get('MVSMF_VERSION'))
+    start_stc(herc, 'FTPD', 'FTPD000I', os.environ.get('FTPD_VERSION'))
+    check_ftpd(herc, os.environ.get('FTPD_VERSION'))
 
-    log('Stopping HTTPD and UFSD, purging the spool...')
-    console(herc, 'STOPSTC', 'P HTTPD', 'P UFSD')
+    log('Stopping FTPD, HTTPD and UFSD, purging the spool...')
+    console(herc, 'STOPSTC', 'P FTPD', 'P HTTPD', 'P UFSD')
     time.sleep(10)
     console(herc, 'PURGESPL', '$PS1-9999', '$PT1-9999', '$PJ1-9999')
     time.sleep(5)
@@ -419,7 +484,7 @@ def main():
         except subprocess.TimeoutExpired:
             herc.kill()
 
-    log('Done: UFSD, HTTPD and mvsMF refreshed and set to autostart.')
+    log('Done: UFSD, HTTPD, mvsMF and FTPD refreshed and set to autostart.')
 
 
 if __name__ == '__main__':
