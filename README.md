@@ -367,13 +367,21 @@ inside the container only.
 
 ### Disposable test instances: `mvsce-target`
 
-`mvsce-builder/mvsce-target` starts an instance with random host ports,
-waits until mvsMF answers and prints it as an mbt 3 environment target;
-`down` removes it again, volumes included.
+`mvsce-builder/mvsce-target` starts an instance, waits until mvsMF answers
+and prints it as an mbt 3 environment target; `down` removes it again,
+completely. It runs the instance in one of two places, and prints the same
+target either way:
+
+| Where | How | Address and ports |
+|-------|-----|-------------------|
+| `--host SSH` (or `MVSCE_TARGET_HOST`) | Docker on that host; the script sends itself through `ssh HOST bash -s`, nothing is installed there | the address `ssh -G` resolves for the host, random host ports |
+| locally, Docker present | Docker | `localhost`, random host ports |
+| locally, no Docker (macOS) | Apple's `container`, the arm64 image natively; needs `python3` | the VM's own address (`192.168.64.x`), the native ports |
+
+`MVSCE_TARGET_RUNTIME=docker|container` forces the local runtime.
 
 ```bash
-# on a machine without Docker: run it against the Docker on an ssh host
-eval "$(mvsce-builder/mvsce-target up --host mvsdev)"
+eval "$(mvsce-builder/mvsce-target up --host mvsdev)"   # or: up (locally)
 mbt target ping env --tso --wait 60     # TSO is up ~1.5 s after mvsMF
 mbt test --mvs --target env
 mvsce-builder/mvsce-target down "$MVSCE_TARGET_NAME" --host mvsdev
@@ -381,36 +389,57 @@ mvsce-builder/mvsce-target down "$MVSCE_TARGET_NAME" --host mvsdev
 
 | Command | Does |
 |---------|------|
-| `up [NAME] [--wait SEC] [--pull always\|missing]` | start, wait for the authenticated `fn=version` (default 120 s), print the target; on failure print the log tail and remove the container |
+| `up [NAME] [--port N ...] [--wait SEC] [--pull always\|missing]` | start, wait for the authenticated `fn=version` (default 120 s), print the target; on failure print the log tail and remove the instance |
 | `status NAME` | print the target of a running instance |
 | `down NAME` | stop it and check that it is gone |
-| `list` | instances on that Docker host, with age, ports and owner |
+| `list` | instances on that host, with address, ports, age and owner |
 | `reap [--older-than MIN]` | remove instances older than MIN minutes (default 240) |
 
-`--host SSH` (or `MVSCE_TARGET_HOST`) sends the script to that host through
-`ssh HOST bash -s`, so nothing has to be installed there, and prints the
-address `ssh -G` resolves for it. The output is `export` lines by default,
-`.env` lines with `--env`, JSON with `--json`:
+The output is `export` lines by default, `.env` lines with `--env`, JSON
+with `--json`:
 
 | Variable | Value |
 |----------|-------|
-| `MBT_TARGET_MVSMF_URL` | `http://<host>:<port of 8080>` |
+| `MBT_TARGET_MVSMF_URL` | `http://<address>:<port of 8080>` |
 | `MBT_TARGET_MVSMF_USER` / `_PASSWORD` | `IBMUSER` / `SYS1` |
 | `MBT_TARGET_HLQ` | `IBMUSER` |
 | `MBT_TARGET_VOLUME` | `WORK00` |
 | `MBT_TARGET_JOBCLASS` / `_MSGCLASS` | `A` / `H` (held, readable through mvsMF) |
 | `MBT_TARGET_TN3270_HOST` / `_PORT` / `_USER` / `_PASSWORD` | the TN3270 console, `IBMUSER` / `SYS1` |
 | `MBT_TARGET_HERCULES_URL` / `_USER` / `_PASSWORD` | the Hercules web console, `hercules` / `hercules` |
-| `MVSCE_TARGET_NAME`, `_IMAGE`, `_HERCULES_REF` | the instance, the image by digest, the Hercules commit |
+| `MVSCE_TARGET_NAME`, `_RUNTIME`, `_IMAGE`, `_HERCULES_REF` | the instance, `docker` or `container`, the image by digest, the Hercules commit |
 | `MVSCE_TARGET_FTP_PORT`, `_RDR_PORTS` | FTPD, and the ASCII/EBCDIC card readers |
+| `MVSCE_TARGET_PORT_<N>` | for each `--port N`: where guest port N is reachable |
 
-At most three instances run per Docker host (`MVSCE_TARGET_MAX`). Each
-carries the label `io.mvslovers.target=<name>` and runs with `--rm`.
-`MVSCE_TARGET_IMAGE` selects another image, e.g. `:dev`.
+`--port N` (repeatable) makes another guest port reachable, for a server
+the image does not run itself (e.g. one under test listening on 3305).
+Under Docker it is published to a random host port, under Apple's
+`container` it is N itself. Other instances reach it at the printed
+address and port too: measured container to container on both runtimes
+(Docker through the host's address and mapped port, Apple VM to VM).
 
-The image also runs under Apple's `container` on Apple silicon (arm64,
-natively): `container run -d --rm -p 28080:8080 -p 23270:3270
-ghcr.io/mvslovers/mvsce-builder` answered `fn=version` 3 s after the start.
+At most three instances run per host (`MVSCE_TARGET_MAX`); under Apple's
+`container` each idle instance costs about half a CPU core (measured
+below), which is what the three is for. Each carries
+the label `io.mvslovers.target=<name>` and leaves nothing behind (Docker:
+`--rm` with its anonymous volumes; Apple's `container`: `--rm`, it creates
+no volumes). `MVSCE_TARGET_IMAGE` selects another image, e.g. `:dev`.
+
+Under Apple's `container` each instance is a VM of its own, `512M` and 2
+CPUs by default (`MVSCE_TARGET_MEMORY`, `MVSCE_TARGET_CPUS`). Measured on
+an Apple M2 Pro Mac with 16 GB and 10 cores: `up` returns after about 6 s
+(mvsMF answers 3 s after the start, at 1024M, 512M and 384M alike); at
+512M the guest still reports about 500 MB available; four
+instances started in parallel took 7–8 s and moved the host's free memory
+from 19 % to 17 %, but each idle instance used about half a core (218 % of
+one core for four), against 8–10 % per container under Docker on mvsdev.
+
+### Inside the image
+
+- BREXX from `SYS2.LINKLIB` needs a `REGION`: without one the fetch fails
+  `IEA703I 106-0C` (`0C` is storage); `REGION=4M` works.
+- `SYS2.LINKLIB` is APF-authorized (`IEAAPF00`: `SYS2.LINKLIB MVS000`),
+  but a module still has to be link-edited `AC(1)` to run authorized.
 
 `docker logs` carries the Hercules log and the console hardcopy
 (`/logs/hercules.log`, `/logs/mvslog.txt`), preceded by the host CPU and
