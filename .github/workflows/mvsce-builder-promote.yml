@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       from:
-        description: Tag to promote
+        description: Tag or digest (sha256:...) to promote, the one the IPL sample ran against
         default: dev
 
 permissions:
@@ -31,7 +31,8 @@ jobs:
 
       - name: Keep the previous latest under a dated tag
         run: |
-          digest() { docker buildx imagetools inspect "$IMAGE_NAME:$1" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"'; }
+          ref() { case "$1" in sha256:*) echo "$IMAGE_NAME@$1" ;; *) echo "$IMAGE_NAME:$1" ;; esac; }
+          digest() { docker buildx imagetools inspect "$(ref "$1")" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"'; }
           from=$(digest "${{ inputs.from }}")
           latest=$(digest latest)
           [ -n "$from" ] || { echo "no $IMAGE_NAME:${{ inputs.from }}"; exit 1; }
@@ -46,5 +47,9 @@ jobs:
 
       - name: Promote
         run: |
-          docker buildx imagetools create -t "$IMAGE_NAME:latest" "$IMAGE_NAME:${{ inputs.from }}"
+          case "${{ inputs.from }}" in
+            sha256:*) src="$IMAGE_NAME@${{ inputs.from }}" ;;
+            *) src="$IMAGE_NAME:${{ inputs.from }}" ;;
+          esac
+          docker buildx imagetools create -t "$IMAGE_NAME:latest" "$src"
           docker buildx imagetools inspect "$IMAGE_NAME:latest"
