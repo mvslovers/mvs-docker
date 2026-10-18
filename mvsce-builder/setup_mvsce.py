@@ -352,9 +352,13 @@ def main():
             sys.exit(1)
 
     log('Starting Hercules...')
+    # stdin stays open: at EOF on stdin a --daemon Hercules shuts down
+    # unless a CPU happens to be started (see entrypoint.sh), and the
+    # shutdown below types 'quit' into it.
     herc = subprocess.Popen(
         ['hercules', '-f', 'conf/local.cnf', '-r', 'conf/mvsce.rc', '--daemon'],
-        stdout=open(LOGFILE, 'w'), stderr=subprocess.STDOUT, cwd='/MVSCE')
+        stdin=subprocess.PIPE, stdout=open(LOGFILE, 'w'),
+        stderr=subprocess.STDOUT, cwd='/MVSCE')
 
     check_hercules(herc, os.environ.get('HERCULES_REF'))
 
@@ -388,12 +392,18 @@ def main():
     time.sleep(5)
 
     # MVS/CE's own shutdown (SYS2.JCLLIB(SHUTFAST)): stops JES2, runs
-    # Z EOD and QUIESCE, then quits Hercules, so the DASDs baked into the
-    # layer are consistent.
+    # Z EOD and QUIESCE, so the DASDs baked into the layer are consistent.
+    # MVS then sits in disabled wait CCC and Hercules is told to quit.
     log('Shutting down MVS (SHUTFAST)...')
+    since = len(read_log())
     submit_ascii(f"""{jobcard('SHUTFAST', 'SHUTFAST')}
 //SHUTFAST EXEC SHUTDOWN,TYPE='SHUTFAST'
 """)
+    if wait_for_string('disabled wait state 000A0000 00000CCC',
+                       SHUTDOWN_TIMEOUT, since):
+        log('MVS quiesced (wait CCC), quitting Hercules')
+        herc.stdin.write(b'quit\n')
+        herc.stdin.flush()
     try:
         herc.wait(timeout=SHUTDOWN_TIMEOUT)
         log('Hercules has quit')
