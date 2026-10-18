@@ -73,7 +73,9 @@ jobs:
           tags: mvsce-builder:test
 
       # Start the image and read back what runs: the Hercules commit and the
-      # mvsMF level must match the labels the build set.
+      # mvsMF level must match the labels the build set, and FTPD has to
+      # greet right away (with domain 1's minimum MPL of 1 the SRM held it
+      # about 30 s after the IPL, ftpd#176).
       - name: Start and check
         env:
           IMAGE: ${{ env.PUSH == 'true' && format('{0}@{1}', env.IMAGE_NAME, steps.push.outputs.digest) || 'mvsce-builder:test' }}
@@ -84,7 +86,7 @@ jobs:
           ref=$(label io.mvslovers.hercules.ref)
           mvsmf=$(label io.mvslovers.mvsmf.version)
           echo "labels: hercules.ref=$ref mvsmf=$mvsmf"
-          docker run -d --rm --name mvs -p 8080:8080 "$IMAGE"
+          docker run -d --rm --name mvs -p 8080:8080 -p 2121:2121 "$IMAGE"
           start=$(date +%s)
           for i in $(seq 1 180); do
             v=$(curl -s -u IBMUSER:SYS1 'http://localhost:8080/zosmf/test?fn=version' || true)
@@ -95,6 +97,9 @@ jobs:
             sleep 1
           done
           echo "after $(( $(date +%s) - start ))s: $v"
+          greet=$(timeout 10 bash -c 'exec 3<>/dev/tcp/localhost/2121; head -c 3 <&3' || true)
+          echo "FTP greeting after $(( $(date +%s) - start ))s: $greet"
+          [ "$greet" = 220 ] || { echo "FTPD did not greet within 10 s"; exit 1; }
           # from the log file itself: `docker logs` follows it with tail -F
           # and can lag behind (seen on arm64: empty 2 s after the start)
           for i in $(seq 1 30); do

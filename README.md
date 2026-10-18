@@ -356,12 +356,15 @@ INITIALIZED` followed about 1.5 s later. Wait for each separately.
 `/zosmf/info` answers 401 without credentials, so a readiness probe has to
 authenticate.
 
-FTPD reports `FTPD001I READY` about 2 s after `docker run`, but does not
-greet its first connection until the `SETPFKEY` started task from
-`COMMND00` has ended, about 30 s after the IPL (`$HASP395 SETPFKEY ENDED`;
-measured twice: greeting 1 s after it). A connection made earlier is
-accepted and then waits
-([ftpd#176](https://github.com/mvslovers/ftpd/issues/176)). Passive
+FTPD reports `FTPD001I READY` about 2 s after `docker run` and greets
+right away. Stock MVS/CE has `DMN=1,CNSTR=(1,50,1)` in
+`SYS1.PARMLIB(IEAIPS00)`, and with that minimum MPL of 1 the SRM keeps
+swappable domain-1 started tasks (FTPD, `SETPFKEY`) swapped out for
+about 30 s after the IPL: FTPD's first connection waited in the host's
+listen backlog until then. The image raises the minimum to 10
+(measured and pinned down by ftpd,
+[ftpd#176](https://github.com/mvslovers/ftpd/issues/176)); CI checks
+that FTPD greets within 10 s of mvsMF answering. Passive
 mode answers with `127,0,0,1` (MVS/CE's `FTPDPRM0`), so data connections work
 inside the container only.
 
