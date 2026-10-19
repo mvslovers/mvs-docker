@@ -6,6 +6,7 @@ ARG HERCULES_FLAVOR=sdl-hyperion
 # Optional: pin Hercules to a specific Hyperion git ref (e.g. a release tag
 # like "Release_4.9.1"). Empty = build the current main HEAD (DEV build).
 ARG HERCULES_REF=
+ARG HERCULES_REPO=https://github.com/SDL-Hercules-390/hyperion.git
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -46,6 +47,14 @@ RUN rm -rf /var/lib/apt/lists/* && \
 WORKDIR /opt
 
 RUN git clone https://github.com/wrljet/hercules-helper.git
+
+# HERCULES_REPO: the Hyperion repository to clone. hercules-helper
+# hard-codes it in its flavor config, so it is rewritten there; a fork
+# (e.g. https://github.com/mvslovers/hyperion.git) makes its branches
+# and commits reachable for HERCULES_REF.
+RUN sed -i "s|^git_repo_hercules=.*|git_repo_hercules=${HERCULES_REPO}|" \
+      /opt/hercules-helper/sdl-hyperion.conf /opt/hercules-helper/hercules-helper.conf \
+    && grep -qx "git_repo_hercules=${HERCULES_REPO}" /opt/hercules-helper/sdl-hyperion.conf
 
 WORKDIR /build
 
