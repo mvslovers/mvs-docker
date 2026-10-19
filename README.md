@@ -309,6 +309,19 @@ its libraries; the build-time IPL checks the running banner again. The
 stage goes away once `mainframed767/mvsce` itself carries a Hercules at or
 after that commit.
 
+**A Hercules from a fork or branch:** `HERCULES_REPO` (default
+`https://github.com/SDL-Hercules-390/hyperion.git`) names the repository to
+clone; `HERCULES_REF` must then be a full commit SHA on any of its branches,
+since the banner check compares SHAs. It is recorded as
+`io.mvslovers.hercules.repo`, and `tk5/Dockerfile` and `hercules/Dockerfile`
+take the same argument. On a Docker host, from the repository root:
+
+```sh
+docker build -t mvsce:fix mvsce \
+  --build-arg HERCULES_REPO=https://github.com/mvslovers/hyperion.git \
+  --build-arg HERCULES_REF=<sha>
+```
+
 MVS/CE 3.0.0 already installs UFSD, HTTPD, mvsMF and FTPD through MVP, but
 does not start them, and its MVP packages predate fixes mvsMF depends on (e.g. listing
 the spool of a job with many steps,

@@ -24,6 +24,7 @@ ARG TK5_UPDATE=5
 ARG TK5_URL=https://www.prince-webdesign.nl/images/downloads/mvs-tk5.zip
 ARG TK5_SHA256=710d002843631322810a276dd42c793fda458548dc64d86e2914a62db7425f84
 ARG HERCULES_REF=a742398074b24c6e9dfff1e4065a55b69a8a4883
+ARG HERCULES_REPO=https://github.com/SDL-Hercules-390/hyperion.git
 ARG UFSD_VERSION=1.4.0
 ARG HTTPD_VERSION=4.3.0
 ARG MVSMF_VERSION=1.3.0
@@ -32,6 +33,7 @@ ARG FTPD_VERSION=1.2.0
 FROM debian:trixie AS hercules
 
 ARG HERCULES_REF
+ARG HERCULES_REPO
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -44,6 +46,14 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN git clone https://github.com/wrljet/hercules-helper.git /opt/hercules-helper
+
+# HERCULES_REPO: the Hyperion repository to clone. hercules-helper
+# hard-codes it in its flavor config, so it is rewritten there; a fork
+# (e.g. https://github.com/mvslovers/hyperion.git) makes its branches
+# and commits reachable for HERCULES_REF.
+RUN sed -i "s|^git_repo_hercules=.*|git_repo_hercules=${HERCULES_REPO}|" \
+      /opt/hercules-helper/sdl-hyperion.conf /opt/hercules-helper/hercules-helper.conf \
+    && grep -qx "git_repo_hercules=${HERCULES_REPO}" /opt/hercules-helper/sdl-hyperion.conf
 
 WORKDIR /build
 
@@ -81,6 +91,7 @@ ARG TK5_UPDATE
 ARG TK5_URL
 ARG TK5_SHA256
 ARG HERCULES_REF
+ARG HERCULES_REPO
 ARG UFSD_VERSION
 ARG HTTPD_VERSION
 ARG MVSMF_VERSION
@@ -168,6 +179,7 @@ LABEL org.opencontainers.image.source="https://github.com/mvslovers/mvs-docker" 
       io.mvslovers.tk5.update="${TK5_UPDATE}" \
       io.mvslovers.tk5.sha256="${TK5_SHA256}" \
       io.mvslovers.hercules.ref="${HERCULES_REF}" \
+      io.mvslovers.hercules.repo="${HERCULES_REPO}" \
       io.mvslovers.ufsd.version="${UFSD_VERSION}" \
       io.mvslovers.httpd.version="${HTTPD_VERSION}" \
       io.mvslovers.mvsmf.version="${MVSMF_VERSION}" \
