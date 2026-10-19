@@ -274,13 +274,12 @@ gets the deploy and the tests.
 
 **Image:** `ghcr.io/mvslovers/mvsce` (public)
 
-**Formerly `mvsce-builder` — the old name is a transition only.**
-`ghcr.io/mvslovers/mvsce-builder` gets the same `:dev` and `:latest` while the
-mvslovers projects move to `mvsce`, and `mvsce-builder/mvsce-target` is a
-link to `mvsce/mvsce-target` for as long. Then both go: the old image stays
-pullable at its last level but gets no updates, so anything still naming it
-silently tests an aging image. Use `ghcr.io/mvslovers/mvsce` and
-`mvsce/mvsce-target`.
+**Formerly `mvsce-builder`, frozen since 2026-10-19.**
+`ghcr.io/mvslovers/mvsce-builder` stays pullable at its last level
+(`:latest` and `:dev` = `sha256:a6096e33…`, the `mvsce:latest` of that day)
+but gets no updates, so anything still naming it silently tests an aging
+image. The link `mvsce-builder/mvsce-target` is gone. Use
+`ghcr.io/mvslovers/mvsce` and `mvsce/mvsce-target`.
 
 ### What's inside
 
@@ -652,7 +651,6 @@ mvs-docker/
 ├── hercules/          hercules image (SDL-Hyperion emulator, base image)
 ├── mvs-dev/           mvs-dev image (headless development container)
 ├── mvsce/             mvsce image (MVS/CE + UFSD + HTTPD + mvsMF + FTPD), mvsce-target
-├── mvsce-builder/     mvsce-target link at its former path
 ├── tk5/               tk5 image (TK5, minimal, + UFSD + HTTPD + mvsMF + FTPD via SMP)
 ├── common/            shared scripts and configs
 ├── .github/workflows/ CI: hercules, mvs-dev, mvsce (build, IPL sample, promote)
