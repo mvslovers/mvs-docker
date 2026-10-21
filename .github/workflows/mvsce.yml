@@ -97,9 +97,15 @@ jobs:
             sleep 1
           done
           echo "after $(( $(date +%s) - start ))s: $v"
-          greet=$(timeout 10 bash -c 'exec 3<>/dev/tcp/localhost/2121; head -c 3 <&3' || true)
+          # the published port accepts and drops connections until FTPD
+          # listens, which can be a moment after mvsMF answers
+          greet=
+          until [ "$greet" = 220 ] || [ $(( $(date +%s) - start )) -ge 12 ]; do
+            greet=$(timeout 10 bash -c 'exec 3<>/dev/tcp/localhost/2121; head -c 3 <&3' || true)
+            [ "$greet" = 220 ] || sleep 1
+          done
           echo "FTP greeting after $(( $(date +%s) - start ))s: $greet"
-          [ "$greet" = 220 ] || { echo "FTPD did not greet within 10 s"; exit 1; }
+          [ "$greet" = 220 ] || { echo "FTPD did not greet within 12 s of the start"; exit 1; }
           # from the log file itself: `docker logs` follows it with tail -F
           # and can lag behind (seen on arm64: empty 2 s after the start)
           for i in $(seq 1 30); do

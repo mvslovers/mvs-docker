@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Refresh UFSD, HTTPD, mvsMF and FTPD on MVS/CE 3.x, enable their autostart.
+"""Install RAKF 2.0.0, refresh UFSD, HTTPD, mvsMF and FTPD on MVS/CE 3.x.
 
-MVS/CE 3.0.0 already installs UFSD, HTTPD, mvsMF and FTPD through MVP, but
-does not start them. The MVP install provides everything this image needs apart
+MVS/CE 3.0.0 ships an older RAKF under the same FMID (TRKF200) and banner
+(RAKF V2R0M0) as RAKF 2.0.0 (TK5 Update 6), so only the content tells them
+apart. It also installs UFSD, HTTPD, mvsMF and FTPD through MVP, but does
+not start them. The MVP install provides everything this image needs apart
 from the load modules themselves:
 
   MVSLOVER.UFSD.LOADLIB        UFSD load library (STEPLIB of the UFSD procs)
@@ -15,27 +17,54 @@ from the load modules themselves:
   UFSD.ROOT, HTTPD.WEBROOT,
   UFSD.SCRATCH, *.UFSHOME      the UFS disks
 
-This script:
+The build runs in two Hercules sessions, because RAKF 2.0.0 replaces
+ICHSFR00 and ICHRIN00 in SYS1.LPALIB and only an IPL with CLPA loads them.
 
-  1. RECEIVEs the release XMITs from /tmp and IEBCOPYs their members, with
+Session 1 (the IPL of the base image):
+
+  1. Removes the old TRKF200 from the SMP inventory (UCLIN DEL on CDS and
+     ACDS), RECEIVEs the TK5 package's XMIT (TK5INST.zip of RAKF v2.0.0),
+     APPLYs and ACCEPTs FUNCTION TRKF200. The package lacks the macro
+     IEZCTGPL, which TK5 has on the system and MVS/CE does not; it is
+     added to RAKF.MACLIB first, or the RACIND assembly fails.
+  2. Checks the installed modules by content, not by return code:
+     ICHSFR00 in SYS1.LPALIB holds 'UNDEFINED CLASS' / 'RAKF0012', and
+     ICHSEC00 in SYS1.LINKLIB (the class descriptor table) the entry
+     JESSPOOL with length byte 8.
+  3. Puts CLPA into SYS1.PARMLIB(IEASYS00) and shuts MVS down with SHUTFAST.
+
+Session 2 (the CLPA IPL):
+
+  4. Checks the storage of the running MVS: the new ICHSFR00 in the PLPA
+     and the new class descriptor table, found through the CVT. Then takes
+     CLPA out of IEASYS00 again: the PLPA the CLPA IPL built stays on the
+     page data set, so the image's IPLs are quick starts as before.
+  5. RECEIVEs the release XMITs from /tmp and IEBCOPYs their members, with
      replace, into the existing load libraries.
-  2. Writes SYS2.PARMLIB(HTTPPRM0) in the form mvsMF documents, and
+  6. Writes SYS2.PARMLIB(HTTPPRM0) in the form mvsMF documents, and
      SYS2.PROCLIB(FTPD) with the spool DDs FTPD's JES interface needs.
-  3. Adds S UFSD / S HTTPD / S FTPD to SYS1.PARMLIB(COMMND00), and raises
+  7. Adds S UFSD / S HTTPD / S FTPD to SYS1.PARMLIB(COMMND00), and raises
      domain 1's minimum MPL in SYS1.PARMLIB(IEAIPS00) from 1 to 10.
-  4. Sets up RAKF for the two servers that switch identity at startup:
-     the users FTPD and HTTPD (group USER, no operations authority), as
-     ftpd's docs/FTPD_RAKF_SETUP.md and httpd's docs/installation.md
-     describe, and the FTPAUTH facility, which only ADMIN may use.
-  5. Starts all three and checks what is actually running: the UFSD000I,
+  8. Sets up RAKF for the two servers that switch identity at startup:
+     the users FTPD and HTTPD, as ftpd's docs/FTPD_RAKF_SETUP.md and
+     httpd's docs/installation.md describe, and the FTPAUTH facility, which
+     only ADMIN may use. RAKF 2.0.0 takes the group of a started task from
+     its USERS entry, and FACILITY SVC244 needs READ for that group, so both
+     users are in STARTED (operations authority N), which gets READ on
+     FACILITY SVC244 and nothing else; STCGROUP would hold ALTER on all data
+     sets. In group USER HTTPD stops with HTTPD012E and FTPD runs without
+     APF authorization.
+     It also gives IBMUSER and MVSCE01 the SPECIAL flag in USERS, which
+     RAKF 2.0.0 requires for ADDUSER, PERMIT and the like.
+  9. Starts all three and checks what is actually running: the UFSD000I,
      HTTPD000I and FTPD000I banners against UFSD_VERSION / HTTPD_VERSION /
      FTPD_VERSION, no RAKF0004 / HTTPD004W / FTPD004W for either server,
-     FTPD004I (FTPD runs as FTPD/USER, not as STC),
+     no HTTPD012E and no APF SETUP FAILED, FTPD004I,
      FTPD001I READY, an FTP login, FTPAUTH refusing the FTPD user, and
      /zosmf/test?fn=version against MVSMF_VERSION.
      A build that installed nothing therefore fails instead of publishing
      the previous level.
-  6. Adds P FTPD / P HTTPD / P UFSD to MVS/CE's SCRIPTS/SHUTDOWN.RC, purges
+ 10. Adds P FTPD / P HTTPD / P UFSD to MVS/CE's SCRIPTS/SHUTDOWN.RC, purges
      the spool and shuts MVS down with MVS/CE's own SHUTFAST, the servers
      still running, so the build fails if the shutdown does not stop them.
 
@@ -56,6 +85,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import zipfile
 
 EBCDIC_PORT = 3506
 ASCII_PORT = 3505
@@ -69,7 +99,7 @@ SHUTDOWN_TIMEOUT = 300  # seconds for SHUTFAST to quit Hercules
 USER = 'IBMUSER'
 PASSWORD = 'SYS1'
 
-LOGFILE = '/tmp/hercules-build.log'
+LOGFILE = '/tmp/hercules-build.log'    # set per Hercules session
 PRINTER = '/MVSCE/printers/prt00e.txt'    # JES2 PRINTER1, class A
 
 # (xmit file, job name, target load library)
@@ -78,6 +108,25 @@ MODULES = [
     ('/tmp/httpd.xmit', 'HTTPDRCV', 'HTTPD.LINKLIB'),
     ('/tmp/mvsmf.xmit', 'MVSMFRCV', 'HTTPD.LINKLIB'),
     ('/tmp/ftpd.xmit',  'FTPDRCV',  'MVSLOVER.FTPD.LOADLIB'),
+]
+
+RAKF_ZIP = '/tmp/rakf/TK5INST.zip'
+RAKF_XMIT = 'trkf200.xmi'                  # the member of RAKF_ZIP
+RAKF_IEZCTGPL = '/tmp/rakf/IEZCTGPL.hlasm'
+RAKF_FMID = 'TRKF200'                      # the old RAKF has it too
+
+# The members of USERMOD.TRKF200, one DD each in RECEIVE, APPLY and ACCEPT.
+RAKF_MEMBERS = [
+    '$$$$$DOC', '$$$$INFO', '$$COPYRT', '$$NOTICE', '$DOC$ZIP',
+    'INITTBLS', 'INITPWUP', 'INITSHAD', 'LPABACK', 'LPAREST',
+    'JRACIND', 'RAKFRMV', 'RAKF2MVS', 'SPECIAL', 'VSAMLRAC',
+    'VSAMSRAC', 'VTOCLRAC', 'VTOCSRAC', 'ZAPMVS38', 'ICHRIN00',
+    'ICHSEC00', 'ICHSFR00', 'RACIND', 'RAKFHASH', 'RAKFPWH',
+    'RAKFPSAV', 'CJYRCVT', 'CJYRUIDS', 'CJYRPROF', 'CJYRPWUP',
+    'ADDUSER', 'ALTUSER', 'DELUSER', 'LISTUSER', 'CONNECT', 'ADDSD',
+    'PERMIT', 'RDELETE', 'LISTP', 'IGC0013A', 'IGC0013C', 'IGC00130',
+    'YREGS', 'CJYUCBLK', 'CJYRCVTD', 'CJYPCBLK', 'IEZCTGFL', 'RAKF',
+    'RAKFPWUP', 'RAKFPROF', 'RAKFUSER', 'RAKFINIT',
 ]
 
 # The z/OSMF routes as mvsMF 1.1.0 documents them: the two endpoints that
@@ -112,7 +161,7 @@ FTPD_PROC = """\
 """
 
 JOBCARD = """//{name:<8} JOB (TSO),'{title}',CLASS=A,MSGCLASS=A,
-//             MSGLEVEL=(1,1),REGION=0M,USER={user},PASSWORD={pw}{group}"""
+//             MSGLEVEL=(1,1),REGION={region},USER={user},PASSWORD={pw}{group}"""
 
 # BREXX, the way MVS/CE's own MVP procedure runs it
 BREXX_DDS = """//TSOLIB   DD DSN=BREXX.CURRENT.RXLIB,DISP=SHR
@@ -130,9 +179,10 @@ def log(msg):
     print(f'[setup {elapsed:6.1f}s] {msg}', flush=True)
 
 
-def jobcard(name, title, group=None):
+def jobcard(name, title, group=None, region='0M'):
     """group: run connected to that RAKF group instead of the default one."""
     return JOBCARD.format(name=name, title=title[:20], user=USER, pw=PASSWORD,
+                          region=region,
                           group=f',\n//             GROUP={group}' if group else '')
 
 
@@ -236,16 +286,19 @@ def submit_ebcdic(data):
         sock.sendall(data)
 
 
-def run_job(herc, name, submit, steps):
+def run_job(herc, name, submit, steps, timeout=JOB_TIMEOUT):
     """Submit a job, wait for its $HASP395 and check every step's CC.
 
     $HASP395 only says the job ended. Each step that ran writes an IEFACTRT
     line ending in '/<cc>/<jobname>'; a step bypassed by COND writes none.
-    So each of the given steps must appear, and each with CC 00000.
+    So each of the given steps must appear, and each with CC 00000, or with
+    one of the CCs of a ('step', '00004') entry. A step of a cataloged
+    procedure is named after the procedure's step, not the EXEC statement:
+    an SMP job has to be one step.
     """
     since = len(read_log())
     submit()
-    if not wait_for_string(f'$HASP395 {name}', JOB_TIMEOUT, since):
+    if not wait_for_string(f'$HASP395 {name}', timeout, since):
         fail(herc, f'job {name} did not complete')
     time.sleep(2)
     pat = re.compile(r'IEFACTRT (\S+)\s*/[^/]*/[^/]*/[^/]*/([^/]+)/'
@@ -255,12 +308,15 @@ def run_job(herc, name, submit, steps):
         m = pat.search(line)
         if m:
             ccs[m.group(1)] = m.group(2).strip()
+    shown = []
     for step in steps:
+        step, ok = step if isinstance(step, tuple) else (step, ('00000',))
         if step not in ccs:
             fail(herc, f'job {name} step {step} did not run')
-        if ccs[step] != '00000':
+        if ccs[step] not in ok:
             fail(herc, f'job {name} step {step} ended CC {ccs[step]}')
-    log(f'  {name} ended, ' + ', '.join(f'{s} {ccs[s]}' for s in steps))
+        shown.append(f'{step} {ccs[step]}')
+    log(f'  {name} ended, ' + ', '.join(shown))
 
 
 def brexx_job(name, title, rexx, group=None):
@@ -330,6 +386,331 @@ def install_modules(herc, xmit, name, target):
 """
     run_job(herc, name, lambda: submit_ebcdic(cards(head) + data + cards(tail)),
             ['RECV', 'COPY'])
+
+
+def rakf_sources(herc):
+    """The XMIT (card images) out of TK5INST.zip, and the IEZCTGPL source."""
+    try:
+        with zipfile.ZipFile(RAKF_ZIP) as z:
+            if z.namelist() != [RAKF_XMIT]:
+                fail(herc, f'{RAKF_ZIP}: expected only {RAKF_XMIT}, '
+                           f'found {z.namelist()}')
+            xmit = z.read(RAKF_XMIT)
+        with open(RAKF_IEZCTGPL) as f:
+            macro = f.read()
+    except (OSError, zipfile.BadZipFile) as e:
+        fail(herc, f'RAKF sources: {e}')
+    if len(xmit) == 0 or len(xmit) % 80:
+        fail(herc, f'{RAKF_XMIT}: {len(xmit)} bytes is not a card-image XMIT')
+    lines = macro.splitlines()
+    if not lines or max(map(len, lines)) > 80 or not macro.isascii() \
+            or any(l.startswith(('@@', './')) for l in lines):
+        fail(herc, f'{RAKF_IEZCTGPL}: not usable as 80-column input')
+    return xmit, macro
+
+
+def smp_job(herc, name, title, step, control, dds='', ok='00000',
+            timeout=JOB_TIMEOUT):
+    """One SMP4 run (SMPAPP, SMPREC): the only step, named HMASMP by IEFACTRT."""
+    jcl = f"""{jobcard(name, title, region='8192K')}
+//{step:<8} EXEC {'SMPREC' if step == 'RECEIVE' else 'SMPAPP'}
+{dds}//SMPCNTL  DD *
+{control}
+/*
+"""
+    run_job(herc, name, lambda: submit_ascii(jcl), [('HMASMP', (ok,))],
+            timeout=timeout)
+
+
+def member_dds(dsn):
+    return ''.join(f'//{m:<8} DD DSN={dsn}({m}),DISP=SHR\n' for m in RAKF_MEMBERS)
+
+
+def read_load_modules(herc, name, modules):
+    """AMBLIST text of load modules, as bytes: [(dsn, member)] -> [bytes].
+
+    The job prints to PRINTER; the TEXT records of each listing are the hex
+    dump of the module, which is decoded and returned.
+    """
+    steps = ''.join(f"""//AMB{i}     EXEC PGM=AMBLIST
+//SYSPRINT DD SYSOUT=*
+//LIB      DD DISP=SHR,DSN={dsn}
+//SYSIN    DD *
+ LISTLOAD DDN=LIB,MEMBER={member},OUTPUT=MODLIST
+/*
+""" for i, (dsn, member) in enumerate(modules, 1))
+    jcl = f"{jobcard(name, 'AMBLIST')}\n{steps}"
+    try:
+        offset = os.path.getsize(PRINTER)
+    except FileNotFoundError:
+        offset = 0
+    run_job(herc, name, lambda: submit_ascii(jcl),
+            [f'AMB{i}' for i in range(1, len(modules) + 1)])
+    end = '*END OF LOAD MODULE LISTING'
+    text = ''
+    start = time.time()
+    while time.time() - start < 60:     # JES2 prints a job after it has ended
+        with open(PRINTER, 'r', errors='replace') as f:
+            f.seek(offset)
+            text = f.read()
+        if text.count(end) >= len(modules):
+            break
+        time.sleep(2)
+    else:
+        fail(herc, f'{name}: AMBLIST listings not printed')
+    hexline = re.compile(r'^\s*[0-9A-F]{6}\s{2,}((?:[0-9A-F]{2,8}\s*)+)$')
+    out = []
+    for part in re.split(r'(?m)^[\f ]*LISTLOAD .*$', text)[1:]:
+        digits, in_text = '', False
+        for line in part.splitlines():
+            line = line.lstrip('\f')
+            if line.startswith('RECORD#'):
+                in_text = 'T E X T' in line
+            elif in_text:
+                m = hexline.match(line)
+                if m:
+                    digits += re.sub(r'\s', '', m.group(1))
+        out.append(bytes.fromhex(digits))
+    if len(out) != len(modules) or not all(out):
+        log(f'  AMBLIST parts: {[len(o) for o in out]} bytes, '
+            f'{text.count("LISTLOAD")} LISTLOAD, {text.count("T E X T")} TEXT')
+        for l in text.splitlines()[:12]:
+            log(f'  | {l!r}')
+        fail(herc, f'{name}: could not read the AMBLIST listings')
+    return out
+
+
+def rakf_content(herc, name):
+    """What the installed ICHSFR00 and ICHSEC00 contain (the old RAKF has the
+    same FMID and banner, and an SMP return code says nothing about it).
+
+    ICHSFR00 (SYS1.LPALIB) holds the message text 'RAKF0012 UNDEFINED CLASS'
+    that 2.0.0 issues for a class missing from the class descriptor table.
+    ICHSEC00 (SYS1.LINKLIB) is that table (CJYRCVT): the entry JESSPOOL is
+    length byte 8, then the name. Returns the facts and the two lengths.
+    """
+    sfr, sec = read_load_modules(herc, name, [('SYS1.LPALIB', 'ICHSFR00'),
+                                              ('SYS1.LINKLIB', 'ICHSEC00')])
+    ebc = lambda t: t.encode('cp037')
+    return {
+        'ICHSFR00 has UNDEFINED CLASS': ebc('UNDEFINED CLASS') in sfr,
+        'ICHSFR00 has RAKF0012': ebc('RAKF0012') in sfr,
+        'ICHSEC00 has CDT entry X\'08\' JESSPOOL': b'\x08' + ebc('JESSPOOL') in sec,
+    }, len(sfr), len(sec)
+
+
+def install_rakf(herc):
+    """FUNCTION TRKF200 of RAKF 2.0.0 by SMP4, over the older RAKF of the same FMID.
+
+    TK5's own deck does the same on TK5. The steps, each its own job (an
+    SMP step of a cataloged procedure is named after the procedure's step,
+    so a job with two of them could not be told apart in the log):
+
+      RAKFPREP  RAKF.* libraries; IEZCTGPL into RAKF.MACLIB
+      RAKFUCL1  UCLIN CDS  DEL SYSMOD(TRKF200)
+      RAKFUCL2  UCLIN ACDS DEL SYSMOD(TRKF200)
+      RAKFXMIT  the XMIT into USERMOD.TRKF200
+      RAKFRCV   RECEIVE, APPLY (RC 04: its linkedits end RC 08), ACCEPT
+
+    The old TRKF200 has to go from the inventory first, or RECEIVE refuses
+    the function. The UCLIN DEL does not need the member ids of the old
+    function, which is why it works with an unknown old level; it ends RC 08
+    (and the next UCLIN is skipped without RESETRC.) if TRKF200 is not there,
+    i.e. if the base image is not what this expects.
+
+    INITTBLS and INITSHAD, which replace the tables and the shadow file with
+    the release's, are not run: the image keeps the users and profiles of
+    MVS/CE. IEZCTGPL (CTGPL of the catalog parameter list) is not in the TK5
+    package, because TK5 has it in SYS1.MACLIB; MVS/CE does not, and without
+    it the RACIND assembly ends RC 12 (IFO188). Upstream's own MVS/CE deck
+    carries it as a ++MAC.
+    """
+    log('Installing RAKF 2.0.0 (FUNCTION TRKF200)...')
+    xmit, macro = rakf_sources(herc)
+
+    def alloc(dd, dsn, space, blksize=27920):
+        return f"""//{dd:<8} DD  DISP=(,CATLG),DSN={dsn},
+//            UNIT=SYSALLDA,VOL=SER=PUB001,SPACE=({space}),
+//            DCB=(RECFM=FB,LRECL=80,BLKSIZE={blksize})
+"""
+    libs = [('MAC', 'RAKF.MACLIB', 'TRK,(5,,5)'),
+            ('SRC', 'RAKF.SRCLIB', 'CYL,(4,,20)'),
+            ('SAMP', 'RAKF.SAMPLIB', 'CYL,(4,,20)'),
+            ('AMAC', 'RAKF.AMACLIB', 'TRK,(5,,5)'),
+            ('APARM', 'RAKF.APARMLIB', 'TRK,(5,,2)'),
+            ('APROC', 'RAKF.APROCLIB', 'TRK,(3,,2)'),
+            ('ASRC', 'RAKF.ASRCLIB', 'CYL,(4,,20)'),
+            ('ASAMP', 'RAKF.ASAMPLIB', 'CYL,(4,,20)')]
+    jcl = f"""{jobcard('RAKFPREP', 'RAKF PREPARE')}
+//ALLOC    EXEC PGM=IEFBR14
+{''.join(alloc(dd, dsn, sp, 80 if dd == 'APARM' else 27920) for dd, dsn, sp in libs)}//MACRO    EXEC PGM=IEBUPDTE,PARM=NEW
+//SYSPRINT DD SYSOUT=*
+//SYSUT2   DD DISP=OLD,DSN=RAKF.MACLIB
+//SYSIN    DD DATA,DLM=@@
+./ ADD NAME=IEZCTGPL
+{macro.rstrip()}
+@@
+"""
+    run_job(herc, 'RAKFPREP', lambda: submit_ascii(jcl), ['ALLOC', 'MACRO'])
+
+    for name, db in (('RAKFUCL1', 'CDS'), ('RAKFUCL2', 'ACDS')):
+        smp_job(herc, name, f'UCLIN {db} TRKF200', 'UCLIN',
+                f' UCLIN {db} .\n DEL SYSMOD({RAKF_FMID}) .\n ENDUCL .')
+
+    dlm = pick_delimiter(xmit)
+    head = f"""{jobcard('RAKFXMIT', 'RECV TRKF200')}
+//RECV     EXEC PGM=RECV370,REGION=6144K
+//STEPLIB  DD DSN=SYSC.LINKLIB,DISP=SHR
+//RECVLOG  DD SYSOUT=*
+//SYSPRINT DD SYSOUT=*
+//SYSIN    DD DUMMY
+//SYSUT1   DD DSN=&&SYSUT1,UNIT=SYSALLDA,VOL=SER=PUB001,
+//            SPACE=(TRK,(250,250)),DISP=(NEW,DELETE,DELETE)
+//SYSUT2   DD DSN=USERMOD.TRKF200,UNIT=SYSALLDA,VOL=SER=PUB001,
+//            SPACE=(TRK,(200,50,50)),DISP=(NEW,CATLG,DELETE)
+//XMITIN   DD DATA,DLM={dlm}
+"""
+    run_job(herc, 'RAKFXMIT',
+            lambda: submit_ebcdic(cards(head) + xmit + cards(f'{dlm}\n')),
+            ['RECV'], timeout=600)
+
+    members = member_dds('USERMOD.TRKF200')
+    smp_job(herc, 'RAKFRCV', 'RECEIVE TRKF200', 'RECEIVE',
+            f' RESETRC.\n RECEIVE SELECT({RAKF_FMID}) .',
+            dds=members + '//SMPPTFIN DD DSN=USERMOD.TRKF200(@CVRLET),DISP=SHR\n',
+            timeout=600)
+    smp_job(herc, 'RAKFAPP', 'APPLY TRKF200', 'APPLYR',
+            f' APPLY S({RAKF_FMID}) DIS(WRITE) .', ok='00004', timeout=900,
+            dds="""//SYSLIB   DD  DISP=SHR,DSN=SYS1.SMPMTS,DCB=BLKSIZE=32720
+//         DD  DISP=SHR,DSN=SYS1.SMPSTS
+//         DD  DISP=SHR,DSN=SYS1.MACLIB
+//         DD  DISP=SHR,DSN=SYS1.AMODGEN
+//         DD  DISP=SHR,DSN=RAKF.MACLIB
+//MACLIB   DD  DISP=SHR,DSN=RAKF.MACLIB
+//SAMPLIB  DD  DISP=SHR,DSN=RAKF.SAMPLIB
+//SRCLIB   DD  DISP=SHR,DSN=RAKF.SRCLIB
+""" + members)
+    smp_job(herc, 'RAKFACC', 'ACCEPT TRKF200', 'ACCEPTR',
+            f' ACCEPT S({RAKF_FMID}) DIS(WRITE) .', timeout=900,
+            dds="""//SYSLIB   DD  DISP=SHR,DSN=SYS1.MACLIB
+//         DD  DISP=SHR,DSN=SYS1.AMODGEN
+//         DD  DISP=SHR,DSN=RAKF.MACLIB
+//AMACLIB  DD  DISP=SHR,DSN=RAKF.AMACLIB
+//APARMLIB DD  DISP=SHR,DSN=RAKF.APARMLIB
+//APROCLIB DD  DISP=SHR,DSN=RAKF.APROCLIB
+//ASAMPLIB DD  DISP=SHR,DSN=RAKF.ASAMPLIB
+//MACLIB   DD  DISP=SHR,DSN=RAKF.MACLIB
+//SAMPLIB  DD  DISP=SHR,DSN=RAKF.SAMPLIB
+//SRCLIB   DD  DISP=SHR,DSN=RAKF.SRCLIB
+//ASRCLIB  DD  DISP=SHR,DSN=RAKF.ASRCLIB
+""" + members)
+
+
+def check_rakf_content(herc, name):
+    facts, sfr_len, sec_len = rakf_content(herc, name)
+    for what, found in facts.items():
+        log(f'  {what}: {"yes" if found else "NO"}')
+    if not all(facts.values()):
+        fail(herc, 'RAKF 2.0.0 is not what is installed (content check)')
+    return sfr_len, sec_len
+
+
+def check_running_rakf(herc, name, sfr_len, sec_len):
+    """What the running MVS has in storage: RAKF 2.0.0 is only in effect once
+    an IPL with CLPA has loaded the new ICHSFR00 into the PLPA.
+
+    CVT+X'F8' (CVTSAF) points to the SAFV, whose word at +12 is the address
+    of ICHSFR00 (the LOAD in ICHSEC00); CVT+X'3E0' (CVTRAC) points to the
+    RCVT, whose word at +48 (RCVTISTL) is the address of CJYRCVT's area,
+    the class descriptor table among it. The message RCVT WAS PROCESSED
+    SUCCESSFULLY of ICHSEC00 is no help: it has no route code, the old
+    ICHSEC00 has it as well and neither shows on the console log.
+    """
+    rexx = f"""
+/* REXX - the RAKF in storage */
+cvt = c2d(storage(10, 4))
+saf = c2d(storage(d2x(cvt + 248), 4))
+sfr = c2d(storage(d2x(saf + 12), 4))
+rac = c2d(storage(d2x(cvt + 992), 4))
+cdt = c2d(storage(d2x(rac + 48), 4))
+a = ''
+DO i = 0 TO {sfr_len} - 1 BY 512
+  a = a || storage(d2x(sfr + i), MIN(512, {sfr_len} - i))
+END
+b = ''
+DO i = 0 TO {sec_len} - 1 BY 512
+  b = b || storage(d2x(cdt + i), MIN(512, {sec_len} - i))
+END
+s1 = pos('UNDEFINED CLASS', a) > 0
+s2 = pos('RAKF0012', a) > 0
+s3 = pos(x2c('08') || 'JESSPOOL', b) > 0
+r = 'RAKFRUN UNDEF=' || word('NO YES', 1 + s1)
+r = r 'R12=' || word('NO YES', 1 + s2)
+r = r 'CDT=' || word('NO YES', 1 + s3)
+say r
+"""
+    try:
+        offset = os.path.getsize(PRINTER)
+    except FileNotFoundError:
+        offset = 0
+    run_job(herc, name, lambda: submit_ascii(brexx_job(name, 'RAKF IN STORAGE', rexx)),
+            ['REXX'])
+    pat = re.compile(r'RAKFRUN UNDEF=(YES|NO) R12=(YES|NO) CDT=(YES|NO)')
+    m = None
+    start = time.time()
+    while not m and time.time() - start < 60:   # JES2 prints a job after it has ended
+        time.sleep(2)
+        with open(PRINTER, 'r', errors='replace') as f:
+            f.seek(offset)
+            m = pat.search(f.read())
+    if not m:
+        fail(herc, f'{name}: no result line')
+    facts = dict(zip(('ICHSFR00 in storage has UNDEFINED CLASS',
+                      'ICHSFR00 in storage has RAKF0012',
+                      'CDT in storage has X\'08\' JESSPOOL'), m.groups()))
+    for what, found in facts.items():
+        log(f'  {what}: {found.lower()}')
+    if set(facts.values()) != {'YES'}:
+        fail(herc, 'the running MVS does not have RAKF 2.0.0 in storage')
+
+
+def set_clpa(herc, on):
+    """CLPA in SYS1.PARMLIB(IEASYS00), after its BLDLF line, or out again."""
+    log(f'{"Adding" if on else "Removing"} CLPA in SYS1.PARMLIB(IEASYS00)...')
+    rexx = f"""
+/* REXX - CLPA line in IEASYS00 (columns 73-80 are the sequence number) */
+ADDRESS TSO
+new = LEFT('CLPA,', 20)
+new = new || LEFT('CLPA FOR RAKF 2.0.0 (IMAGE BUILD)', 52)
+new = new || '00000025'
+"ALLOC F(SYS) DA('SYS1.PARMLIB(IEASYS00)') SHR REUSE"
+"EXECIO * DISKR SYS (STEM LINE. FINIS"
+o = 0; clpa = 0; bldlf = 0
+DO i = 1 TO line.0
+  IF LEFT(line.i, 5) = 'CLPA,' THEN DO
+    clpa = clpa + 1
+    IF {0 if on else 1} THEN ITERATE
+  END
+  o = o + 1; out.o = line.i
+  IF LEFT(line.i, 6) = 'BLDLF=' THEN DO
+    bldlf = bldlf + 1
+    IF {1 if on else 0} THEN DO
+      o = o + 1; out.o = new
+    END
+  END
+END
+IF bldlf <> 1 THEN EXIT 8
+IF {1 if on else 0} & clpa <> 0 THEN EXIT 8
+IF {0 if on else 1} & clpa <> 1 THEN EXIT 8
+out.0 = o
+"EXECIO" out.0 "DISKW SYS (STEM OUT. FINIS"
+"FREE F(SYS)"
+EXIT 0
+"""
+    name = 'CLPAON' if on else 'CLPAOFF'
+    run_job(herc, name,
+            lambda: submit_ascii(brexx_job(name, 'IEASYS00 CLPA', rexx)),
+            ['REXX'])
 
 
 def write_httpprm0(herc):
@@ -431,15 +812,30 @@ EXIT 0
 def setup_rakf(herc):
     """RAKF users for FTPD and HTTPD, and FTPAUTH.
 
-    Both servers drop from STC (operations authority) to their own user in
-    group USER at startup; without that user RAKF answers RAKF0004 and the
-    server keeps running as STC (FTPD004W / HTTPD004W). ftpd's
+    Both servers drop from STC (operations authority) to their own user
+    at startup; without that user RAKF answers RAKF0004 and the server
+    keeps running as STC (FTPD004W / HTTPD004W). ftpd's
     docs/FTPD_RAKF_SETUP.md and httpd's docs/installation.md (section 8).
 
-    MVS/CE runs RAKF 2: users are added with ADDUSER (the password goes to
+    The group of the users is STARTED, not USER and not STCGROUP. Since
+    RAKF 2.0.0 the USERS entry of a started task decides its group (before,
+    the entry only had to exist), and FACILITY SVC244 is granted to ADMIN
+    and STCGROUP only in the image: in group USER HTTPD ends with HTTPD012E
+    (no APF authorization) and FTPD runs on with APF SETUP FAILED RC=4.
+    STCGROUP is no option, it holds ALTER on DATASET *. RAKF's own sample
+    puts both users in STARTED with FACILITY SVC244 READ, and so does the
+    PROFILES edit below. The operations authority stays N, so neither can
+    log in as an operator.
+
+    Users are added with ADDUSER (the password goes to
     SYS1.SECURE.SHADOW), profiles are edited in SYS1.SECURE.CNTL(PROFILES).
     Both need the RAKFADM group; IBMUSER's default group ADMIN has no
-    access to SYS1.SECURE.*.
+    access to SYS1.SECURE.*. RAKF 2.0.0 also wants the SPECIAL authority
+    (column 30 of USERS) for ADDUSER and the other administration commands;
+    MVS/CE's USERS has IBMUSER and MVSCE01 with the operations flag only,
+    so all the lines of exactly those two users (one per group) get the
+    SPECIAL flag first (the job ends RC 8 unless both users are found; no
+    other user is touched), and S RAKFUSER follows, since the job's authority is the one in the loaded table.
 
     Both sign on with PASSCHK=NO and never use the password, so it is
     random and not kept. FTPAUTH is granted to ADMIN only, so the FTPD
@@ -451,13 +847,44 @@ def setup_rakf(herc):
     pws = {u: secrets.choice(string.ascii_uppercase)
               + ''.join(secrets.choice(alphabet) for _ in range(7))
            for u in ('FTPD', 'HTTPD')}
+    rexx = """
+/* REXX - SPECIAL (col 30) for IBMUSER and MVSCE01 only */
+ADDRESS TSO
+"ALLOC F(USR) DA('SYS1.SECURE.CNTL(USERS)') SHR REUSE"
+"EXECIO * DISKR USR (STEM IN. FINIS"
+found = ''
+DO i = 1 TO in.0
+  l = LEFT(in.i, 80)
+  out.i = l
+  IF LEFT(l, 1) = '*' THEN ITERATE
+  u = STRIP(LEFT(l, 8))
+  IF u = 'IBMUSER' | u = 'MVSCE01' THEN DO
+    out.i = LEFT(l, 28) || ' Y' || SUBSTR(l, 31)
+    found = found u
+  END
+END
+IF POS('IBMUSER', found) = 0 | POS('MVSCE01', found) = 0 THEN EXIT 8
+out.0 = in.0
+"EXECIO" out.0 "DISKW USR (STEM OUT. FINIS"
+"FREE F(USR)"
+EXIT 0
+"""
+    run_job(herc, 'USRSPEC',
+            lambda: submit_ascii(brexx_job('USRSPEC', 'USERS SPECIAL', rexx,
+                                           'RAKFADM')),
+            ['REXX'])
+    since = len(read_log())
+    console(herc, 'RAKFUSR', 'S RAKFUSER')
+    if not wait_for_string('RAKFUIDS4  USER TABLE UPDATED', START_TIMEOUT, since):
+        fail(herc, 'RAKF reload: RAKFUIDS4  USER TABLE UPDATED not seen')
+
     steps = ''.join(f"""//ADD{u:<5} EXEC PGM=IKJEFT01,REGION=4096K
 //SYSPRINT DD  SYSOUT=*
 //SYSTERM  DD  SYSOUT=*
 //SYSIN    DD  DUMMY
 //SYSTSPRT DD  SYSOUT=*
 //SYSTSIN  DD  *
- ADDUSER {u} PASSWORD({pw}) DFLTGRP(USER) NOOPERATIONS
+ ADDUSER {u} PASSWORD({pw}) DFLTGRP(STARTED) NOOPERATIONS
 /*
 """ for u, pw in pws.items())
     jcl = f"""{jobcard('ADDUSERS', 'ADDUSER FTPD HTTPD', 'RAKFADM')}
@@ -468,13 +895,14 @@ def setup_rakf(herc):
     # Ascending order on columns 1-60 with the universal (blank group)
     # line first, or RAKF rejects the whole table.
     rexx = """
-/* REXX - insert FTPAUTH into SYS1.SECURE.CNTL(PROFILES), in order */
+/* REXX - insert FTPAUTH and SVC244/STARTED into PROFILES, in order */
 ADDRESS TSO
 "ALLOC F(PRF) DA('SYS1.SECURE.CNTL(PROFILES)') SHR REUSE"
 "EXECIO * DISKR PRF (STEM IN. FINIS"
 new.1 = LEFT('FACILITYFTPAUTH', 60) || 'NONE'
 new.2 = LEFT(LEFT('FACILITYFTPAUTH', 52) || 'ADMIN', 60) || 'READ'
-new.0 = 2
+new.3 = LEFT(LEFT('FACILITYSVC244', 52) || 'STARTED', 60) || 'READ'
+new.0 = 3
 o = 0; k = 1
 DO i = 1 TO in.0
   IF POS('FACILITYFTPAUTH ', in.i) = 1 THEN EXIT 8
@@ -506,7 +934,8 @@ EXIT 0
 
 
 def check_identity(herc, name, since, ready):
-    """No RAKF0004 for the server, no <name>004W, and <name>002I present.
+    """No RAKF0004 for the server, no <name>004W, no HTTPD012E (for HTTPD)
+    and <name>002I present.
 
     Checked once <ready> has appeared, so the startup lines are all in.
     """
@@ -517,9 +946,12 @@ def check_identity(herc, name, since, ready):
         fail(herc, f'{name} start reports RAKF0004 for USER:{name}')
     if f'{name}004W' in started:
         fail(herc, f'{name} start reports {name}004W')
+    if f'{name}012E' in started:
+        fail(herc, f'{name} start reports {name}012E (no APF authorization)')
     if f'{name}002I AUTHORIZED BY' not in started:
         fail(herc, f'no {name}002I AUTHORIZED BY line')
-    log(f'  {name}: no RAKF0004, no {name}004W, {name}002I present')
+    log(f'  {name}: no RAKF0004, no {name}004W, no {name}012E, '
+        f'{name}002I present')
 
 
 def console(herc, name, *commands):
@@ -551,12 +983,13 @@ def check_ftpd(herc, expected, since, ftpd_pw):
         fail(herc, f'FTPD not ready ({want} not seen)')
     log(f'  {want}')
     started = read_log()[since:]
-    for bad in ('RAKF0004', 'FTPD004W'):
+    for bad in ('RAKF0004', 'FTPD004W', 'APF SETUP FAILED'):
         if bad in started:
             fail(herc, f'FTPD start reports {bad}')
     if 'FTPD004I STC IDENTITY SET TO FTPD/USER' not in started:
         fail(herc, 'FTPD did not switch to FTPD/USER (no FTPD004I)')
-    log('  FTPD004I STC IDENTITY SET TO FTPD/USER, no RAKF0004/FTPD004W')
+    log('  FTPD004I STC IDENTITY SET TO FTPD/USER, no RAKF0004/FTPD004W, '
+        'no APF SETUP FAILED')
     try:
         with ftplib.FTP() as ftp:
             ftp.connect('127.0.0.1', FTP_PORT, timeout=30)
@@ -646,17 +1079,11 @@ def patch_shutdown_rc():
     log(f'{SHUTDOWN_RC}: P FTPD / P HTTPD / P UFSD and a 1-CPU poweroff rule added')
 
 
-def main():
-    global START_TIME
-    START_TIME = time.time()
-
-    for xmit, _, _ in MODULES:
-        if not os.path.exists(xmit):
-            log(f'ERROR: {xmit} not found')
-            sys.exit(1)
-    patch_shutdown_rc()
-
-    log('Starting Hercules...')
+def start_hercules(session):
+    """IPL MVS in a new Hercules process; its log is /tmp/hercules-build-<session>.log."""
+    global LOGFILE
+    LOGFILE = f'/tmp/hercules-build-{session}.log'
+    log(f'Starting Hercules (session {session})...')
     # stdin stays open: at EOF on stdin a --daemon Hercules shuts down
     # unless a CPU happens to be started (see entrypoint.sh), and the
     # shutdown below types 'quit' into it.
@@ -677,6 +1104,81 @@ def main():
         fail(herc, 'JES2 initiators not ready')
     log('MVS is up')
     time.sleep(5)
+    return herc
+
+
+def purge_spool(herc):
+    log('Purging the spool...')
+    console(herc, 'PURGESPL', '$PS1-9999', '$PT1-9999', '$PJ1-9999')
+    time.sleep(5)
+
+
+def shutdown_mvs(herc, servers):
+    """MVS/CE's own shutdown (SYS2.JCLLIB(SHUTFAST)), then quit Hercules.
+
+    It stops JES2, runs Z EOD and QUIESCE, so the DASDs baked into the
+    layer are consistent. MVS then sits in disabled wait CCC and Hercules
+    is told to quit. servers: the started tasks SHUTDOWN.RC has to have
+    stopped (patch_shutdown_rc).
+    """
+    log('Shutting down MVS (SHUTFAST)...')
+    since = len(read_log())
+    submit_ascii(f"""{jobcard('SHUTFAST', 'SHUTFAST')}
+//SHUTFAST EXEC SHUTDOWN,TYPE='SHUTFAST'
+""")
+    if not wait_for_line('HHC00809I Processor CP00: disabled wait state 000A0000 00000CCC',
+                         SHUTDOWN_TIMEOUT, since):
+        fail(herc, 'SHUTFAST did not reach wait CCC (servers not stopped?)')
+    for name in servers:
+        if f'$HASP395 {name}' not in read_log()[since:]:
+            fail(herc, f'SHUTFAST did not stop {name}')
+    if servers:
+        log(f'  {", ".join(servers)} stopped by SHUTDOWN.RC')
+    log('MVS quiesced (wait CCC), quitting Hercules')
+    herc.stdin.write(b'quit\n')
+    # Hercules finishes its shutdown, but the process only exits once
+    # stdin reaches EOF (measured with a742398074: 'Hercules terminated'
+    # and then 300 s of nothing until SIGTERM).
+    herc.stdin.close()
+    try:
+        herc.wait(timeout=SHUTDOWN_TIMEOUT)
+        log('Hercules has quit')
+    except subprocess.TimeoutExpired:
+        log('WARNING: MVS did not shut down in time, stopping Hercules')
+        dump_log_tail()
+        herc.terminate()
+        try:
+            herc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            herc.kill()
+
+
+def main():
+    global START_TIME
+    START_TIME = time.time()
+
+    for xmit, _, _ in MODULES:
+        if not os.path.exists(xmit):
+            log(f'ERROR: {xmit} not found')
+            sys.exit(1)
+    patch_shutdown_rc()
+
+    # Session 1: RAKF 2.0.0, and CLPA for the next IPL.
+    herc = start_hercules(1)
+    log('RAKF before the install (information only):')
+    for what, found in rakf_content(herc, 'RAKFOLD')[0].items():
+        log(f'  {what}: {"yes" if found else "no"}')
+    install_rakf(herc)
+    sfr_len, sec_len = check_rakf_content(herc, 'RAKFCHK')
+    set_clpa(herc, True)
+    purge_spool(herc)
+    shutdown_mvs(herc, [])
+
+    # Session 2: the CLPA IPL loads the new ICHSFR00 and ICHRIN00 into the
+    # PLPA; everything else on top of it.
+    herc = start_hercules(2)
+    check_running_rakf(herc, 'RAKFRUN', sfr_len, sec_len)
+    set_clpa(herc, False)
 
     # UFSD and HTTPD are installed but not started, so the libraries are
     # free for DISP=OLD.
@@ -699,48 +1201,14 @@ def main():
     check_ftpd(herc, os.environ.get('FTPD_VERSION'), since, ftpd_pw)
 
     # The servers stay up: SHUTFAST has to stop them (patch_shutdown_rc).
-    log('Purging the spool...')
-    console(herc, 'PURGESPL', '$PS1-9999', '$PT1-9999', '$PJ1-9999')
-    time.sleep(5)
-
-    # MVS/CE's own shutdown (SYS2.JCLLIB(SHUTFAST)): stops JES2, runs
-    # Z EOD and QUIESCE, so the DASDs baked into the layer are consistent.
-    # MVS then sits in disabled wait CCC and Hercules is told to quit.
-    log('Shutting down MVS (SHUTFAST)...')
-    since = len(read_log())
-    submit_ascii(f"""{jobcard('SHUTFAST', 'SHUTFAST')}
-//SHUTFAST EXEC SHUTDOWN,TYPE='SHUTFAST'
-""")
-    if not wait_for_line('HHC00809I Processor CP00: disabled wait state 000A0000 00000CCC',
-                         SHUTDOWN_TIMEOUT, since):
-        fail(herc, 'SHUTFAST did not reach wait CCC (servers not stopped?)')
-    for name in ('FTPD', 'HTTPD', 'UFSD'):
-        if f'$HASP395 {name}' not in read_log()[since:]:
-            fail(herc, f'SHUTFAST did not stop {name}')
-    log('  FTPD, HTTPD and UFSD stopped by SHUTDOWN.RC')
-    log('MVS quiesced (wait CCC), quitting Hercules')
-    herc.stdin.write(b'quit\n')
-    # Hercules finishes its shutdown, but the process only exits once
-    # stdin reaches EOF (measured with a742398074: 'Hercules terminated'
-    # and then 300 s of nothing until SIGTERM).
-    herc.stdin.close()
-    try:
-        herc.wait(timeout=SHUTDOWN_TIMEOUT)
-        log('Hercules has quit')
-    except subprocess.TimeoutExpired:
-        log('WARNING: MVS did not shut down in time, stopping Hercules')
-        dump_log_tail()
-        herc.terminate()
-        try:
-            herc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            herc.kill()
+    purge_spool(herc)
+    shutdown_mvs(herc, ['FTPD', 'HTTPD', 'UFSD'])
 
     # the printed job output (and the ADDUSER card) stays out of the image
     for name in os.listdir(os.path.dirname(PRINTER)):
         open(os.path.join(os.path.dirname(PRINTER), name), 'w').close()
 
-    log('Done: UFSD, HTTPD, mvsMF and FTPD refreshed and set to autostart.')
+    log('Done: RAKF 2.0.0, UFSD, HTTPD, mvsMF and FTPD installed and set to autostart.')
 
 
 if __name__ == '__main__':
