@@ -362,14 +362,18 @@ only:
   their own at startup, as
   [FTPD_RAKF_SETUP.md](https://github.com/mvslovers/ftpd/blob/v1.2.0/docs/FTPD_RAKF_SETUP.md)
   and httpd's `docs/installation.md` (section 8) describe: the users `FTPD`
-  and `HTTPD` (group `STCGROUP`, no operations authority, random passwords
+  and `HTTPD` (group `STARTED`, no operations authority, random passwords
   nobody keeps) and the facility `FTPAUTH`, granted to the `ADMIN` group
   only, so `IBMUSER` and `MVSCE01` may use FTP while `MVSCE02` and `FTPD`
   itself get `530 Not authorized for FTP access`. **The group is
-  `STCGROUP`, not `USER`:** since RAKF 2.0.0 the `USERS` entry of a started
-  task decides its group, and only `ADMIN` and `STCGROUP` may use
-  `FACILITY SVC244`. In group `USER`, HTTPD stops with `HTTPD012E ... APF
-  AUTHORIZATION` and FTPD runs on with `APF SETUP FAILED RC=4`. Also new in
+  `STARTED`, not `USER` and not `STCGROUP`:** since RAKF 2.0.0 the `USERS`
+  entry of a started task decides its group, and `FACILITY SVC244` needs
+  `READ` for it. In group `USER`, HTTPD stops with `HTTPD012E ... APF
+  AUTHORIZATION` and FTPD runs on with `APF SETUP FAILED RC=4`. `STCGROUP`
+  has `SVC244` too, but also `ALTER` on all data sets, which neither server
+  should run with; so the build adds `FACILITY SVC244 ... STARTED READ` to
+  `SYS1.SECURE.CNTL(PROFILES)` (RAKF 2.0.0's own sample does the same), and
+  `STARTED` gets nothing else. Also new in
   2.0.0: `ADDUSER`, `PERMIT` and the other RAKF commands need the `SPECIAL`
   authority (column 30 of `USERS`), which MVS/CE's `IBMUSER` and `MVSCE01`
   lack, so the build sets the flag on their lines (`Y Y`) and on no
@@ -392,8 +396,10 @@ one empties it.
 
 **On a system with an older RAKF:** the same two traps apply to anything
 that upgrades RAKF to 2.0.0 and keeps its `USERS` table. Started-task users
-whose entry names a group other than `STCGROUP`/`ADMIN` lose `FACILITY
-SVC244` (and with it APF authorization of HTTPD and FTPD), and administrators
+whose entry names a group without `READ` on `FACILITY SVC244` lose it (and
+with it APF authorization of HTTPD and FTPD). Give them a dedicated group
+with only that permission (RAKF's own sample uses `STARTED`), not `STCGROUP`
+or `ADMIN`, which hold far more. Administrators
 without the `SPECIAL` flag can no longer use `ADDUSER` and its siblings.
 Fix the `USERS` lines, then `S RAKFUSER`.
 

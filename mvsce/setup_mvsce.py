@@ -49,9 +49,11 @@ Session 2 (the CLPA IPL):
      the users FTPD and HTTPD, as ftpd's docs/FTPD_RAKF_SETUP.md and
      httpd's docs/installation.md describe, and the FTPAUTH facility, which
      only ADMIN may use. RAKF 2.0.0 takes the group of a started task from
-     its USERS entry, and only ADMIN and STCGROUP may use FACILITY SVC244,
-     so both users are in STCGROUP (operations authority N): in group USER
-     HTTPD stops with HTTPD012E and FTPD runs without APF authorization.
+     its USERS entry, and FACILITY SVC244 needs READ for that group, so both
+     users are in STARTED (operations authority N), which gets READ on
+     FACILITY SVC244 and nothing else; STCGROUP would hold ALTER on all data
+     sets. In group USER HTTPD stops with HTTPD012E and FTPD runs without
+     APF authorization.
      It also gives IBMUSER and MVSCE01 the SPECIAL flag in USERS, which
      RAKF 2.0.0 requires for ADDUSER, PERMIT and the like.
   9. Starts all three and checks what is actually running: the UFSD000I,
@@ -402,7 +404,7 @@ def rakf_sources(herc):
         fail(herc, f'{RAKF_XMIT}: {len(xmit)} bytes is not a card-image XMIT')
     lines = macro.splitlines()
     if not lines or max(map(len, lines)) > 80 or not macro.isascii() \
-            or any(l.startswith('@@') for l in lines):
+            or any(l.startswith(('@@', './')) for l in lines):
         fail(herc, f'{RAKF_IEZCTGPL}: not usable as 80-column input')
     return xmit, macro
 
@@ -815,12 +817,15 @@ def setup_rakf(herc):
     keeps running as STC (FTPD004W / HTTPD004W). ftpd's
     docs/FTPD_RAKF_SETUP.md and httpd's docs/installation.md (section 8).
 
-    The group of the users is STCGROUP, not USER. Since RAKF 2.0.0 the USERS
-    entry of a started task decides its group (before, the entry only had
-    to exist), and FACILITY SVC244 is granted to ADMIN and STCGROUP alone:
-    in group USER HTTPD ends with HTTPD012E (no APF authorization) and FTPD
-    runs on with APF SETUP FAILED RC=4. The operations authority stays N,
-    so neither can log in as an operator.
+    The group of the users is STARTED, not USER and not STCGROUP. Since
+    RAKF 2.0.0 the USERS entry of a started task decides its group (before,
+    the entry only had to exist), and FACILITY SVC244 is granted to ADMIN
+    and STCGROUP only in the image: in group USER HTTPD ends with HTTPD012E
+    (no APF authorization) and FTPD runs on with APF SETUP FAILED RC=4.
+    STCGROUP is no option, it holds ALTER on DATASET *. RAKF's own sample
+    puts both users in STARTED with FACILITY SVC244 READ, and so does the
+    PROFILES edit below. The operations authority stays N, so neither can
+    log in as an operator.
 
     Users are added with ADDUSER (the password goes to
     SYS1.SECURE.SHADOW), profiles are edited in SYS1.SECURE.CNTL(PROFILES).
@@ -879,7 +884,7 @@ EXIT 0
 //SYSIN    DD  DUMMY
 //SYSTSPRT DD  SYSOUT=*
 //SYSTSIN  DD  *
- ADDUSER {u} PASSWORD({pw}) DFLTGRP(STCGROUP) NOOPERATIONS
+ ADDUSER {u} PASSWORD({pw}) DFLTGRP(STARTED) NOOPERATIONS
 /*
 """ for u, pw in pws.items())
     jcl = f"""{jobcard('ADDUSERS', 'ADDUSER FTPD HTTPD', 'RAKFADM')}
@@ -890,13 +895,14 @@ EXIT 0
     # Ascending order on columns 1-60 with the universal (blank group)
     # line first, or RAKF rejects the whole table.
     rexx = """
-/* REXX - insert FTPAUTH into SYS1.SECURE.CNTL(PROFILES), in order */
+/* REXX - insert FTPAUTH and SVC244/STARTED into PROFILES, in order */
 ADDRESS TSO
 "ALLOC F(PRF) DA('SYS1.SECURE.CNTL(PROFILES)') SHR REUSE"
 "EXECIO * DISKR PRF (STEM IN. FINIS"
 new.1 = LEFT('FACILITYFTPAUTH', 60) || 'NONE'
 new.2 = LEFT(LEFT('FACILITYFTPAUTH', 52) || 'ADMIN', 60) || 'READ'
-new.0 = 2
+new.3 = LEFT(LEFT('FACILITYSVC244', 52) || 'STARTED', 60) || 'READ'
+new.0 = 3
 o = 0; k = 1
 DO i = 1 TO in.0
   IF POS('FACILITYFTPAUTH ', in.i) = 1 THEN EXIT 8
