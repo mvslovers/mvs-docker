@@ -14,7 +14,9 @@
 # ICHRIN00 in SYS1.LPALIB are loaded. The package is a release asset of
 # MVS-sysgen/RAKF, pinned by SHA-256; the build fails if it differs.
 #
-# Bump a version by changing its ARG; nothing else refers to it.
+# Bump a version by changing its ARG; nothing else refers to it. The one
+# exception is RAKF_VERSION, which also needs new RAKF_ZIP_SHA256 and
+# RAKF_IEZCTGPL_SHA256 values (sha256sum of the two downloads).
 #
 # Hercules is replaced as well. MVS/CE 3.0.0 carries the Hercules of
 # mainframed767/hercules as of March 2026 (4.10.0.11668, g5081b9ea), which

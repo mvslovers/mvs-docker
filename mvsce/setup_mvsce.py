@@ -828,8 +828,9 @@ def setup_rakf(herc):
     access to SYS1.SECURE.*. RAKF 2.0.0 also wants the SPECIAL authority
     (column 30 of USERS) for ADDUSER and the other administration commands;
     MVS/CE's USERS has IBMUSER and MVSCE01 with the operations flag only,
-    so those lines get the SPECIAL flag first (and S RAKFUSER, since the
-    job's authority is the one in the loaded table).
+    so all the lines of exactly those two users (one per group) get the
+    SPECIAL flag first (the job ends RC 8 unless both users are found; no
+    other user is touched), and S RAKFUSER follows, since the job's authority is the one in the loaded table.
 
     Both sign on with PASSCHK=NO and never use the password, so it is
     random and not kept. FTPAUTH is granted to ADMIN only, so the FTPD
@@ -842,21 +843,22 @@ def setup_rakf(herc):
               + ''.join(secrets.choice(alphabet) for _ in range(7))
            for u in ('FTPD', 'HTTPD')}
     rexx = """
-/* REXX - SPECIAL (col 30) for the users with OPERATIONS (col 28) */
+/* REXX - SPECIAL (col 30) for IBMUSER and MVSCE01 only */
 ADDRESS TSO
 "ALLOC F(USR) DA('SYS1.SECURE.CNTL(USERS)') SHR REUSE"
 "EXECIO * DISKR USR (STEM IN. FINIS"
-n = 0
+found = ''
 DO i = 1 TO in.0
   l = LEFT(in.i, 80)
   out.i = l
   IF LEFT(l, 1) = '*' THEN ITERATE
-  IF SUBSTR(l, 28, 1) = 'Y' & SUBSTR(l, 30, 1) = ' ' THEN DO
+  u = STRIP(LEFT(l, 8))
+  IF u = 'IBMUSER' | u = 'MVSCE01' THEN DO
     out.i = LEFT(l, 28) || ' Y' || SUBSTR(l, 31)
-    n = n + 1
+    found = found u
   END
 END
-IF n = 0 THEN EXIT 8
+IF POS('IBMUSER', found) = 0 | POS('MVSCE01', found) = 0 THEN EXIT 8
 out.0 = in.0
 "EXECIO" out.0 "DISKW USR (STEM OUT. FINIS"
 "FREE F(USR)"

@@ -372,7 +372,8 @@ only:
   AUTHORIZATION` and FTPD runs on with `APF SETUP FAILED RC=4`. Also new in
   2.0.0: `ADDUSER`, `PERMIT` and the other RAKF commands need the `SPECIAL`
   authority (column 30 of `USERS`), which MVS/CE's `IBMUSER` and `MVSCE01`
-  lack, so the build gives them `Y Y`,
+  lack, so the build sets the flag on their lines (`Y Y`) and on no
+  other user's; it fails if either of the two is missing,
 - adds `S UFSD` / `S HTTPD` / `S FTPD` to `SYS1.PARMLIB(COMMND00)`.
 
 It checks RAKF by content, not by return code, and **fails unless** the
