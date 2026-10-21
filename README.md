@@ -440,9 +440,12 @@ Under Docker it is published to a random host port, under Apple's
 address and port too: measured container to container on both runtimes
 (Docker through the host's address and mapped port, Apple VM to VM).
 
-At most three instances run per host (`MVSCE_TARGET_MAX`); under Apple's
-`container` each idle instance costs about half a CPU core (measured
-below), which is what the three is for. Each carries
+At most six instances run per host under Docker and three under Apple's
+`container` (`MVSCE_TARGET_MAX` overrides both). Under `container` each
+idle instance costs about half a CPU core (measured below), which is
+what the three is for; under Docker an instance took about 60 MB and
+stayed far below a core on a 4-vCPU host, and its lowest CPU shares
+leave the host's own work first. Each carries
 the label `io.mvslovers.target=<name>` and leaves nothing behind (Docker:
 `--rm` with its anonymous volumes; Apple's `container`: `--rm`, it creates
 no volumes). `MVSCE_TARGET_IMAGE` selects any other image, e.g. `:dev`, and

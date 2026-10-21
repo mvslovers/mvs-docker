@@ -42,7 +42,8 @@
 #
 # Environment: MVSCE_TARGET_HOST (= --host), MVSCE_TARGET_RUNTIME,
 # MVSCE_TARGET_DIST (= --dist), MVSCE_TARGET_IMAGE (any image, overrides
-# --dist), MVSCE_TARGET_MAX (instances per host, default 3),
+# --dist), MVSCE_TARGET_MAX (instances per host, default 6 with Docker,
+# 3 with Apple's container),
 # MVSCE_TARGET_MEMORY / MVSCE_TARGET_CPUS (Apple's container: per VM,
 # default 512M / 2), MVSCE_TARGET_CPU_SHARES (Docker: --cpu-shares,
 # default 2, the lowest, which leans a contended CPU towards whatever
@@ -52,7 +53,7 @@ set -euo pipefail
 
 DIST=${MVSCE_TARGET_DIST:-mvsce}
 IMAGE=${MVSCE_TARGET_IMAGE:-}
-MAX=${MVSCE_TARGET_MAX:-3}
+MAX=${MVSCE_TARGET_MAX:-}
 VM_MEMORY=${MVSCE_TARGET_MEMORY:-512M}
 VM_CPUS=${MVSCE_TARGET_CPUS:-2}
 CPU_SHARES=${MVSCE_TARGET_CPU_SHARES:-2}
@@ -149,6 +150,9 @@ case "$runtime" in
         command -v python3 >/dev/null || die "python3 is needed with Apple's container" ;;
     *) die "MVSCE_TARGET_RUNTIME must be docker or container" ;;
 esac
+# An idle instance costs about 60 MB and little CPU under Docker, half a
+# core under Apple's container (README).
+[ -n "$MAX" ] || { [ "$runtime" = docker ] && MAX=6 || MAX=3; }
 advertise=${advertise:-localhost}
 
 cname() { echo "mvsce-$1"; }
