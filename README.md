@@ -291,11 +291,12 @@ image. The link `mvsce-builder/mvsce-target` is gone. Use
 | [HTTPD](https://github.com/mvslovers/httpd) | 4.3.0 | `HTTPD.LINKLIB` |
 | [mvsMF](https://github.com/mvslovers/mvsmf) | 1.3.0 | `HTTPD.LINKLIB` |
 | [FTPD](https://github.com/mvslovers/ftpd) | 1.2.0 | `MVSLOVER.FTPD.LOADLIB` |
+| [RAKF](https://github.com/MVS-sysgen/RAKF) | 2.0.0 (TK5 Update 6), replacing the older RAKF of the base image | `SYS1.LPALIB`, `SYS1.LINKLIB`, SMP4 FUNCTION `TRKF200` |
 
 The versions are `ARG`s in `mvsce/Dockerfile`
 (`MVSCE_VERSION`, `HERCULES_REF`, `UFSD_VERSION`, `HTTPD_VERSION`,
-`MVSMF_VERSION`, `FTPD_VERSION`) and are recorded as image labels
-(`io.mvslovers.<component>.version`, `io.mvslovers.hercules.ref`).
+`MVSMF_VERSION`, `FTPD_VERSION`, `RAKF_VERSION`) and are recorded as image
+labels (`io.mvslovers.<component>.version`, `io.mvslovers.hercules.ref`).
 
 **Hercules is rebuilt, not taken from MVS/CE.** `mainframed767/mvsce:3.0.0`
 carries a Hercules from March 2026 (`g5081b9ea`) without the 3215-C console
@@ -322,6 +323,29 @@ docker build -t mvsce:fix mvsce \
   --build-arg HERCULES_REF=<sha>
 ```
 
+**RAKF 2.0.0 replaces the base image's RAKF.** `mainframed767/mvsce:3.0.0`
+ships an older RAKF that has the same FMID (`TRKF200`) and the same banner
+(`RAKF V2R0M0`) as 2.0.0, so neither an SMP return code nor the IPL banner
+says which one is installed. The build removes the old `TRKF200` from the SMP4
+inventory (`UCLIN DEL SYSMOD` on CDS and ACDS) and RECEIVEs, APPLYs and
+ACCEPTs the function from the XMIT in `TK5INST.zip` of the
+[v2.0.0 release](https://github.com/MVS-sysgen/RAKF/releases/tag/v2.0.0), as
+TK5 does for Update 6. The package is fetched with `ADD --checksum` and
+pinned (`RAKF_ZIP_SHA256`; Docker rejects a different file), so no binary is
+checked in. It lacks the macro `IEZCTGPL`, which TK5 has in `SYS1.MACLIB` and
+MVS/CE does not, so the build adds the one of the same tag
+(`RAKF_IEZCTGPL_SHA256`) to `RAKF.MACLIB` first; without it the `RACIND`
+assembly ends RC 12. The control tables `SYS1.SECURE.CNTL` and the shadow
+file are kept (`INITTBLS`/`INITSHAD` do not run).
+
+The new `ICHSFR00` is in `SYS1.LPALIB`, so it takes an IPL with CLPA. The
+build therefore runs two Hercules sessions: the first installs RAKF and puts
+`CLPA` into `SYS1.PARMLIB(IEASYS00)`; after the CLPA IPL the second takes it
+out again and does everything below. The PLPA that the CLPA IPL built stays on
+the page data set, so the image starts quickly as before (no CLPA at each
+start); a container from the image has RAKF 2.0.0 in storage right after its
+normal IPL.
+
 MVS/CE 3.0.0 already installs UFSD, HTTPD, mvsMF and FTPD through MVP, but
 does not start them, and its MVP packages predate fixes mvsMF depends on (e.g. listing
 the spool of a job with many steps,
@@ -338,19 +362,39 @@ only:
   their own at startup, as
   [FTPD_RAKF_SETUP.md](https://github.com/mvslovers/ftpd/blob/v1.2.0/docs/FTPD_RAKF_SETUP.md)
   and httpd's `docs/installation.md` (section 8) describe: the users `FTPD`
-  and `HTTPD` (group `USER`, no operations authority, random passwords
+  and `HTTPD` (group `STCGROUP`, no operations authority, random passwords
   nobody keeps) and the facility `FTPAUTH`, granted to the `ADMIN` group
   only, so `IBMUSER` and `MVSCE01` may use FTP while `MVSCE02` and `FTPD`
-  itself get `530 Not authorized for FTP access`,
+  itself get `530 Not authorized for FTP access`. **The group is
+  `STCGROUP`, not `USER`:** since RAKF 2.0.0 the `USERS` entry of a started
+  task decides its group, and only `ADMIN` and `STCGROUP` may use
+  `FACILITY SVC244`. In group `USER`, HTTPD stops with `HTTPD012E ... APF
+  AUTHORIZATION` and FTPD runs on with `APF SETUP FAILED RC=4`. Also new in
+  2.0.0: `ADDUSER`, `PERMIT` and the other RAKF commands need the `SPECIAL`
+  authority (column 30 of `USERS`), which MVS/CE's `IBMUSER` and `MVSCE01`
+  lack, so the build gives them `Y Y`,
 - adds `S UFSD` / `S HTTPD` / `S FTPD` to `SYS1.PARMLIB(COMMND00)`.
 
-It then starts all three and **fails unless** the `UFSD000I`/`HTTPD000I`/
+It checks RAKF by content, not by return code, and **fails unless** the
+installed `ICHSFR00` has the text `UNDEFINED CLASS` / `RAKF0012` and the
+class descriptor table in `ICHSEC00` has the entry `JESSPOOL`, and the same
+two are found in the storage of the CLPA-IPLed system. It then starts all
+three servers and **fails unless** the `UFSD000I`/`HTTPD000I`/
 `FTPD000I` banners and `/zosmf/test?fn=version` report the pinned versions,
-neither server logs `RAKF0004`, `HTTPD004W` or `FTPD004W`, HTTPD logs
-`HTTPD002I AUTHORIZED BY`, FTPD `FTPD004I STC IDENTITY SET TO FTPD/USER`, `FTPD001I READY` follows, an FTP login as `IBMUSER` succeeds and
-one as `FTPD` is refused, so a build that installed nothing cannot be
-published as the new level. The build jobs print to `printers/prt00e.txt`
-(MSGCLASS A); a failed build shows its tail, a good one empties it.
+neither server logs `RAKF0004`, `HTTPD004W`, `FTPD004W`, `HTTPD012E` or
+`APF SETUP FAILED`, HTTPD logs `HTTPD002I AUTHORIZED BY`, FTPD
+`FTPD004I STC IDENTITY SET TO FTPD/USER`, `FTPD001I READY` follows, an FTP
+login as `IBMUSER` succeeds and one as `FTPD` is refused, so a build that
+installed nothing cannot be published as the new level. The build jobs print
+to `printers/prt00e.txt` (MSGCLASS A); a failed build shows its tail, a good
+one empties it.
+
+**On a system with an older RAKF:** the same two traps apply to anything
+that upgrades RAKF to 2.0.0 and keeps its `USERS` table. Started-task users
+whose entry names a group other than `STCGROUP`/`ADMIN` lose `FACILITY
+SVC244` (and with it APF authorization of HTTPD and FTPD), and administrators
+without the `SPECIAL` flag can no longer use `ADDUSER` and its siblings.
+Fix the `USERS` lines, then `S RAKFUSER`.
 
 ### Usage
 
