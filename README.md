@@ -674,7 +674,11 @@ container's exit. The build shuts down that way too.
 `hercules`, `mvs-dev`, `mvsce` and `tk5` are built and published by GitHub
 Actions (on changes under their respective directories); `mvsce` and `tk5`
 go to `:dev` and are promoted to `:latest` by hand (`promote.yml`), `mvsce`
-after the IPL sample.
+after the IPL sample. The previous `:latest` stays reachable under the date
+of the promotion and, if `keep_as` is given, under that name as well:
+`mvsce:rakf-1` is the last image with the old RAKF, the red side of a
+red/green test against RAKF 2.0.0
+(`MVSCE_TARGET_IMAGE=ghcr.io/mvslovers/mvsce:rakf-1 mvsce-target up`).
 `make` builds and tests locally:
 
 ```bash
