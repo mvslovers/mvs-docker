@@ -83,7 +83,9 @@ ARG RAKF_VERSION=2.0.0
 # TK5INST.zip of the RAKF release: trkf200.xmi, the TK5 Update 6 install
 # deck. It has no IEZCTGPL (TK5 has that macro in SYS1.MACLIB, MVS/CE does
 # not); the one of the same tag is added from the repository.
-ARG RAKF_ZIP_SHA256=a56844b79fe3dd267d5de81eee71c84075238be5ff18992bf02b106493d89890
+# The v2.0.0 asset was replaced upstream on 2026-10-22 (same tag, RDEFINE
+# now checks class and profile for duplicates); this is the new one.
+ARG RAKF_ZIP_SHA256=f38359ef3430ca305bbbaf11058811efbba1134a5db7a9d52112756c837f1c1c
 ARG RAKF_IEZCTGPL_SHA256=9b4564f758063f2a9eecfe13eef02cef3d57ef06685637e1abe331e5dde9dae0
 
 USER root
