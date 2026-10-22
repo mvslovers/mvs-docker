@@ -3,7 +3,9 @@ run-name: Promote ${{ inputs.image }} ${{ inputs.from }} to latest
 
 # Makes :latest the image currently tagged :dev (after the IPL sample has
 # been run against :dev). The previous :latest stays reachable under the
-# date of the promotion, with -2, -3 ... if that date is taken already.
+# date of the promotion, with -2, -3 ... if that date is taken already,
+# and additionally under keep_as when given (e.g. rakf-1 for the last image
+# with the old RAKF, used as the red side of red/green tests).
 
 on:
   workflow_dispatch:
@@ -16,6 +18,9 @@ on:
       from:
         description: Tag or digest (sha256:...) to promote, the one the IPL sample ran against
         default: dev
+      keep_as:
+        description: Optional extra tag for the previous latest (e.g. rakf-1), in addition to the dated tag
+        default: ""
 
 permissions:
   contents: read
@@ -36,7 +41,17 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Promote, keeping the previous latest under a dated tag
+        env:
+          KEEP_AS: ${{ inputs.keep_as }}
         run: |
+          case "$KEEP_AS" in
+            ""|[a-z0-9]*) ;;
+            *) echo "keep_as must start with a lower-case letter or digit"; exit 1 ;;
+          esac
+          case "$KEEP_AS" in
+            latest|dev) echo "keep_as must not be latest or dev"; exit 1 ;;
+            *[!a-z0-9._-]*) echo "keep_as: only a-z 0-9 . _ -"; exit 1 ;;
+          esac
           digest() { docker buildx imagetools inspect "$1" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"'; }
           case "${{ inputs.from }}" in
             sha256:*) from=$(digest "$IMAGE_NAME@${{ inputs.from }}") ;;
@@ -55,6 +70,10 @@ jobs:
               while [ -n "$(digest "$name:$tag")" ]; do n=$((n + 1)); tag=$(date -u +%Y%m%d)-$n; done
               docker buildx imagetools create -t "$name:$tag" "$name@$latest"
               echo "previous $name:latest kept as :$tag"
+              if [ -n "$KEEP_AS" ]; then
+                docker buildx imagetools create -t "$name:$KEEP_AS" "$name@$latest"
+                echo "previous $name:latest also kept as :$KEEP_AS"
+              fi
             fi
             docker buildx imagetools create -t "$name:latest" "$IMAGE_NAME@$from"
             docker buildx imagetools inspect "$name:latest"
