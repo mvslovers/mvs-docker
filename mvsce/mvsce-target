@@ -47,7 +47,10 @@
 # MVSCE_TARGET_MEMORY / MVSCE_TARGET_CPUS (Apple's container: per VM,
 # default 512M / 2), MVSCE_TARGET_CPU_SHARES (Docker: --cpu-shares,
 # default 2, the lowest, which leans a contended CPU towards whatever
-# else runs on the host; the README says by how much).
+# else runs on the host; the README says by how much), MVSCE_NUMCPU (mvsce
+# image only: its Hercules CPUs, 1 to 9; unset keeps the one CPU). With two
+# or more, `up` starts the instance up to three times: the IPL can stall
+# with a second CPU (Dockerfile).
 
 set -euo pipefail
 
@@ -57,6 +60,7 @@ MAX=${MVSCE_TARGET_MAX:-}
 VM_MEMORY=${MVSCE_TARGET_MEMORY:-512M}
 VM_CPUS=${MVSCE_TARGET_CPUS:-2}
 CPU_SHARES=${MVSCE_TARGET_CPU_SHARES:-2}
+NUMCPU=${MVSCE_NUMCPU:-}
 LABEL=io.mvslovers.target
 
 # The target profile, from the image's io.mvslovers.target.* labels (see
@@ -121,6 +125,10 @@ case "$DIST" in
     *) die "--dist must be mvsce or tk5, not '$DIST'" ;;
 esac
 IMAGE=${IMAGE:-ghcr.io/mvslovers/$DIST:latest}
+case "$NUMCPU" in
+    ""|[1-9]) ;;
+    *) die "MVSCE_NUMCPU must be 1 to 9, not '$NUMCPU'" ;;
+esac
 
 # Remote mode: run this very script on the ssh host, under Docker. The
 # address printed for the target is the one this machine reaches it by.
@@ -133,7 +141,8 @@ if [ -n "$host" ] && [ -z "$advertise" ]; then
     [ "$format" = env ] && opts+=(--env)
     exec ssh -T -o BatchMode=yes "$host" \
         MVSCE_TARGET_IMAGE="$IMAGE" MVSCE_TARGET_MAX="$MAX" \
-        MVSCE_TARGET_CPU_SHARES="$CPU_SHARES" MVSCE_TARGET_RUNTIME=docker \
+        MVSCE_TARGET_CPU_SHARES="$CPU_SHARES" MVSCE_NUMCPU="$NUMCPU" \
+        MVSCE_TARGET_RUNTIME=docker \
         bash -s -- "$cmd" "$@" "${opts[@]}" < "${BASH_SOURCE[0]}"
 fi
 
@@ -325,7 +334,8 @@ rt_pull() {
 }
 
 rt_run() {      # $1 name, $2 instance name; labels and ports from globals
-    local p pub=()
+    local p pub=() cpus=()
+    if [ -n "$NUMCPU" ]; then cpus=(-e "MVSCE_NUMCPU=$NUMCPU"); fi
     if [ "$runtime" = docker ]; then
         # IPv4 only: with an IPv6 mapping too, Docker gives it its own random
         # port, and a name that resolves to ::1 reaches the wrong service.
@@ -335,13 +345,13 @@ rt_run() {      # $1 name, $2 instance name; labels and ports from globals
             --label "$LABEL=$2" --label "$LABEL.owner=${SUDO_USER:-$(id -un)}" \
             --label "$LABEL.dist=$PDIST" \
             --label "$LABEL.created=$(date +%s)" --label "$LABEL.ports=$extra" \
-            "${pub[@]}" "$IMAGE" >/dev/null
+            ${cpus[@]+"${cpus[@]}"} "${pub[@]}" "$IMAGE" >/dev/null
     else
         container run -d --rm --name "$1" -m "$VM_MEMORY" -c "$VM_CPUS" \
             --label "$LABEL=$2" --label "$LABEL.owner=$(id -un)" \
             --label "$LABEL.dist=$PDIST" \
             --label "$LABEL.created=$(date +%s)" --label "$LABEL.ports=$extra" \
-            "$IMAGE" >/dev/null 2>&1
+            ${cpus[@]+"${cpus[@]}"} "$IMAGE" >/dev/null 2>&1
     fi
 }
 
@@ -466,25 +476,12 @@ stop_target() {
     ! rt_exists "$1" || die "$1 could not be removed"
 }
 
-cmd_up() {
-    local name=${1:-} c running deadline state code addr port
-    if [ -z "$name" ]; then
-        name=t$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
-    fi
-    check_name "$name"
-    c=$(cname "$name")
-    ! rt_exists "$c" || die "$c exists already (mvsce-target down $name)"
-    running=$(rt_running)
-    [ "$running" -lt "$MAX" ] \
-        || die "$running of $MAX instances already running on $(hostname)"
-
-    if [ "$pull" = always ] || [ -z "$(img_labels "$IMAGE")" ]; then
-        rt_pull || die "cannot pull $IMAGE"
-    fi
-    load_profile "$(img_labels "$IMAGE")"
-    for p in $extra; do
-        case " $PORTS " in *" $p:"*) die "port $p is published anyway" ;; esac
-    done
+# Starts instance $2 as container $1 and returns once mvsMF answers and
+# Hercules has as many CPUs online as asked for; otherwise it stops the
+# container and returns 1.
+start_once() {
+    local c=$1 name=$2 want online deadline state code addr port hport herc_auth
+    want=${NUMCPU:-1}
     rt_run "$c" "$name" || die "starting $c failed"
     trap 'stop_target "$c"; exit 130' INT TERM
 
@@ -504,14 +501,62 @@ cmd_up() {
         [ "$code" = 200 ] && break
         state=$(rt_state "$c")
         if [ "$state" != running ] || [ "$(date +%s)" -ge "$deadline" ]; then
+            trap - INT TERM
             echo "mvsce-target: $c not ready (container $state, mvsMF $code)" >&2
             rt_logs "$c" >&2
             stop_target "$c"
-            exit 1
+            return 1
         fi
         sleep 1
     done
+
+    if [ "$runtime" = docker ]; then
+        hport=$(rt_port "$c" 8888)
+    else
+        hport=8888
+    fi
+    herc_auth=()
+    if [ -n "$HERC_USER" ]; then herc_auth=(-u "$HERC_USER:$HERC_PASS"); fi
+    online=$({ curl -s -m 5 ${herc_auth[@]+"${herc_auth[@]}"} \
+               "http://$addr:$hport/cgi-bin/api/v1/cpus" 2>/dev/null \
+               || true; } \
+             | { grep -o '"online": *true' || true; } | wc -l | tr -d ' ')
     trap - INT TERM
+    if [ "$online" != "$want" ]; then
+        echo "mvsce-target: $c has $online CPU(s) online, $want asked for" >&2
+        stop_target "$c"
+        return 1
+    fi
+    echo "mvsce-target: $c runs with $want CPU(s), all online" >&2
+}
+
+cmd_up() {
+    local name=${1:-} c running attempts try
+    if [ -z "$name" ]; then
+        name=t$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
+    fi
+    check_name "$name"
+    c=$(cname "$name")
+    ! rt_exists "$c" || die "$c exists already (mvsce-target down $name)"
+    running=$(rt_running)
+    [ "$running" -lt "$MAX" ] \
+        || die "$running of $MAX instances already running on $(hostname)"
+
+    if [ "$pull" = always ] || [ -z "$(img_labels "$IMAGE")" ]; then
+        rt_pull || die "cannot pull $IMAGE"
+    fi
+    load_profile "$(img_labels "$IMAGE")"
+    for p in $extra; do
+        case " $PORTS " in *" $p:"*) die "port $p is published anyway" ;; esac
+    done
+    # With two or more CPUs the IPL can stall (Dockerfile): start again.
+    attempts=1
+    if [ "${NUMCPU:-1}" -gt 1 ]; then attempts=3; fi
+    for try in $(seq 1 "$attempts"); do
+        if start_once "$c" "$name"; then break; fi
+        [ "$try" -lt "$attempts" ] || exit 1
+        echo "mvsce-target: $c did not come up, starting it again ($try of $attempts)" >&2
+    done
     print_target "$c"
 }
 
