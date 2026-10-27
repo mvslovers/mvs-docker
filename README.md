@@ -448,7 +448,7 @@ prints the same target either way:
 | Where | How | Address and ports |
 |-------|-----|-------------------|
 | `--host SSH` (or `MVSCE_TARGET_HOST`) | Docker on that host; the script sends itself through `ssh HOST bash -s`, nothing is installed there | the address `ssh -G` resolves for the host, random host ports |
-| locally, Docker present | Docker | `localhost`, random host ports |
+| locally, Docker present | Docker | `127.0.0.1`, random host ports (IPv4 only) |
 | locally, no Docker (macOS) | Apple's `container`, the arm64 image natively; needs `python3` | the VM's own address (`192.168.64.x`), the native ports |
 
 `MVSCE_TARGET_RUNTIME=docker|container` forces the local runtime.

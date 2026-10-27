@@ -153,7 +153,7 @@ esac
 # An idle instance costs about 60 MB and little CPU under Docker, half a
 # core under Apple's container (README).
 [ -n "$MAX" ] || { [ "$runtime" = docker ] && MAX=6 || MAX=3; }
-advertise=${advertise:-localhost}
+advertise=${advertise:-127.0.0.1}
 
 cname() { echo "mvsce-$1"; }
 
@@ -327,8 +327,10 @@ rt_pull() {
 rt_run() {      # $1 name, $2 instance name; labels and ports from globals
     local p pub=()
     if [ "$runtime" = docker ]; then
-        for p in $PORTS; do pub+=(-p "0:${p%%:*}"); done
-        for p in $extra; do pub+=(-p "0:$p"); done
+        # IPv4 only: with an IPv6 mapping too, Docker gives it its own random
+        # port, and a name that resolves to ::1 reaches the wrong service.
+        for p in $PORTS; do pub+=(-p "0.0.0.0::${p%%:*}"); done
+        for p in $extra; do pub+=(-p "0.0.0.0::$p"); done
         docker run -d --rm --name "$1" --cpu-shares "$CPU_SHARES" \
             --label "$LABEL=$2" --label "$LABEL.owner=${SUDO_USER:-$(id -un)}" \
             --label "$LABEL.dist=$PDIST" \
