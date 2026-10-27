@@ -48,9 +48,10 @@
 # default 512M / 2), MVSCE_TARGET_CPU_SHARES (Docker: --cpu-shares,
 # default 2, the lowest, which leans a contended CPU towards whatever
 # else runs on the host; the README says by how much), MVSCE_NUMCPU (mvsce
-# image only: its Hercules CPUs, 1 to 9; unset keeps the one CPU). With two
-# or more, `up` starts the instance up to three times: the IPL can stall
-# with a second CPU (Dockerfile).
+# image only: its Hercules CPUs, 1 to 9; unset keeps the one CPU; `up` checks
+# it, other commands ignore it). With two or more, `up` asks Hercules for its
+# CPUs and starts the instance up to three times: the IPL can stall with a
+# second CPU (Dockerfile).
 
 set -euo pipefail
 
@@ -125,10 +126,15 @@ case "$DIST" in
     *) die "--dist must be mvsce or tk5, not '$DIST'" ;;
 esac
 IMAGE=${IMAGE:-ghcr.io/mvslovers/$DIST:latest}
-case "$NUMCPU" in
-    ""|[1-9]) ;;
-    *) die "MVSCE_NUMCPU must be 1 to 9, not '$NUMCPU'" ;;
-esac
+if [ "$cmd" = up ]; then
+    case "$NUMCPU" in
+        ""|[1-9]) ;;
+        *) die "MVSCE_NUMCPU must be 1 to 9, not '$NUMCPU'" ;;
+    esac
+    if [ "${NUMCPU:-1}" -ge 2 ] && [ "$DIST" = tk5 ]; then
+        die "tk5 keeps one CPU and ignores MVSCE_NUMCPU=$NUMCPU; use --dist mvsce for $NUMCPU CPUs"
+    fi
+fi
 
 # Remote mode: run this very script on the ssh host, under Docker. The
 # address printed for the target is the one this machine reaches it by.
@@ -480,8 +486,7 @@ stop_target() {
 # Hercules has as many CPUs online as asked for; otherwise it stops the
 # container and returns 1.
 start_once() {
-    local c=$1 name=$2 want online deadline state code addr port hport herc_auth
-    want=${NUMCPU:-1}
+    local c=$1 name=$2 online deadline state code addr port hport herc_auth
     rt_run "$c" "$name" || die "starting $c failed"
     trap 'stop_target "$c"; exit 130' INT TERM
 
@@ -510,6 +515,10 @@ start_once() {
         sleep 1
     done
 
+    if [ "${NUMCPU:-1}" -lt 2 ]; then
+        trap - INT TERM
+        return 0
+    fi
     if [ "$runtime" = docker ]; then
         hport=$(rt_port "$c" 8888)
     else
@@ -522,12 +531,13 @@ start_once() {
                || true; } \
              | { grep -o '"online": *true' || true; } | wc -l | tr -d ' ')
     trap - INT TERM
-    if [ "$online" != "$want" ]; then
-        echo "mvsce-target: $c has $online CPU(s) online, $want asked for" >&2
+    if [ "$online" != "$NUMCPU" ]; then
+        echo "mvsce-target: $c has $online CPU(s) online, $NUMCPU asked for" >&2
+        if [ "$PDIST" = tk5 ]; then echo "mvsce-target: tk5 ignores MVSCE_NUMCPU and keeps one CPU" >&2; fi
         stop_target "$c"
         return 1
     fi
-    echo "mvsce-target: $c runs with $want CPU(s), all online" >&2
+    echo "mvsce-target: $c runs with $NUMCPU CPU(s), all online" >&2
 }
 
 cmd_up() {
