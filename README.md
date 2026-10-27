@@ -542,8 +542,9 @@ with two, the IPL occasionally stalled around the second CPU. Start the
 container with `-e MVSCE_NUMCPU=2` to get two back, or run
 `MVSCE_NUMCPU=2 mvsce-target up`: that one checks, once mvsMF answers, that
 Hercules has both CPUs online, and starts the instance again (up to three
-times) if the IPL stalled. `MVSCE_NUMCPU` is read by the mvsce image only;
-the tk5 image keeps one CPU.
+times) if the IPL stalled. Without the variable, or with `1`, `up` does not
+query Hercules at all. `MVSCE_NUMCPU` is read by the mvsce image only: the
+tk5 image keeps one CPU, and `up` refuses a value above 1 with `--dist tk5`.
 
 **Shutdown.** `SYS2.JCLLIB(SHUTFAST)` (or `SHUTDOWN`, with 5 minutes of
 warnings) shuts MVS down and ends the container: measured with the
