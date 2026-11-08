@@ -63,7 +63,9 @@ Session 2 (the CLPA IPL):
      FTPD_VERSION, no RAKF0004 / HTTPD004W / FTPD004W for either server,
      no HTTPD012E and no APF SETUP FAILED, FTPD004I,
      FTPD001I READY, an FTP login, FTPAUTH refusing the FTPD user, and
-     /zosmf/test?fn=version against MVSMF_VERSION.
+     /zosmf/info zosmf_full_version against MVSMF_VERSION (a release has no
+     /zosmf/test), and the console route
+     /zosmf/restconsoles/v1/log (401 without a login, 200 for IBMUSER).
      A build that installed nothing therefore fails instead of publishing
      the previous level.
  10. Adds P FTPD / P HTTPD / P UFSD to MVS/CE's SCRIPTS/SHUTDOWN.RC, purges
@@ -86,6 +88,7 @@ import string
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -1038,11 +1041,10 @@ def check_ftpd(herc, expected, since, ftpd_pw):
 
 
 def check_mvsmf(herc, expected):
-    log('Checking the running mvsMF level (/zosmf/test?fn=version)...')
+    log('Checking the running mvsMF level (/zosmf/info)...')
     if not wait_for_port(HTTP_PORT, timeout=60):
         fail(herc, f'HTTPD is not listening on port {HTTP_PORT}')
-    req = urllib.request.Request(
-        f'http://127.0.0.1:{HTTP_PORT}/zosmf/test?fn=version')
+    req = urllib.request.Request(f'http://127.0.0.1:{HTTP_PORT}/zosmf/info')
     cred = base64.b64encode(f'{USER}:{PASSWORD}'.encode()).decode()
     req.add_header('Authorization', f'Basic {cred}')
     try:
@@ -1050,9 +1052,34 @@ def check_mvsmf(herc, expected):
             info = json.loads(resp.read().decode())
     except Exception as e:  # noqa: BLE001 - any failure fails the build
         fail(herc, f'mvsMF version probe failed: {e}')
-    log(f'  mvsMF {info.get("version")} build {info.get("build")}')
-    if expected and info.get('version', '').upper() != expected.upper():
-        fail(herc, f'mvsMF reports {info.get("version")}, expected {expected}')
+    version = info.get('zosmf_full_version', '')
+    log(f'  mvsMF {version}')
+    if version.endswith('-dev'):
+        fail(herc, f'mvsMF {version} is a development build, not a release')
+    if expected and version.upper() != expected.upper():
+        fail(herc, f'mvsMF reports {version}, expected {expected}')
+
+
+def check_console_route(herc):
+    log('Checking the console route (/zosmf/restconsoles/v1/log)...')
+    url = f'http://127.0.0.1:{HTTP_PORT}/zosmf/restconsoles/v1/log'
+    try:
+        urllib.request.urlopen(url, timeout=30)
+        fail(herc, 'console route answers without a login')
+    except urllib.error.HTTPError as e:
+        if e.code != 401:
+            fail(herc, f'console route without a login answers {e.code}, expected 401')
+    req = urllib.request.Request(url)
+    cred = base64.b64encode(f'{USER}:{PASSWORD}'.encode()).decode()
+    req.add_header('Authorization', f'Basic {cred}')
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            code = resp.status
+    except urllib.error.HTTPError as e:
+        code = e.code
+    if code != 200:
+        fail(herc, f'console route with a login answers {code}, expected 200')
+    log('  401 without a login, 200 for IBMUSER')
 
 
 SHUTDOWN_RC = '/MVSCE/SCRIPTS/SHUTDOWN.RC'
@@ -1221,6 +1248,7 @@ def main():
     start_stc(herc, 'HTTPD', 'HTTPD000I', os.environ.get('HTTPD_VERSION'))
     check_identity(herc, 'HTTPD', since, 'HTTPD001I')
     check_mvsmf(herc, os.environ.get('MVSMF_VERSION'))
+    check_console_route(herc)
     since = len(read_log())
     start_stc(herc, 'FTPD', 'FTPD000I', os.environ.get('FTPD_VERSION'))
     check_ftpd(herc, os.environ.get('FTPD_VERSION'), since, ftpd_pw)

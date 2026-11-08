@@ -19,7 +19,7 @@ test-mvsce:
 	  $(REGISTRY)/mvsce:$(TAG)
 	@echo "Waiting for MVS IPL and HTTPD..."
 	@rc=1; for i in $$(seq 1 60); do \
-	  if curl -sf -u IBMUSER:SYS1 'http://localhost:8080/zosmf/test?fn=version'; then rc=0; break; fi; \
+	  if curl -sf -u IBMUSER:SYS1 'http://localhost:8080/zosmf/info'; then rc=0; break; fi; \
 	  sleep 5; \
 	done; \
 	[ $$rc -eq 0 ] || docker logs --tail 50 mvsce-test; \

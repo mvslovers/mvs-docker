@@ -89,8 +89,8 @@ jobs:
           docker run -d --rm --name mvs -p 8080:8080 -p 2121:2121 "$IMAGE"
           start=$(date +%s)
           for i in $(seq 1 180); do
-            v=$(curl -s -u IBMUSER:SYS1 'http://localhost:8080/zosmf/test?fn=version' || true)
-            case "$v" in *'"version"'*) break ;; esac
+            v=$(curl -s -u IBMUSER:SYS1 'http://localhost:8080/zosmf/info' || true)
+            case "$v" in *'"zosmf_full_version"'*) break ;; esac
             if [ "$(docker inspect -f '{{.State.Status}}' mvs 2>/dev/null)" != running ]; then
               echo "container stopped"; exit 1
             fi
