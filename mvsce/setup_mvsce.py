@@ -129,15 +129,17 @@ RAKF_MEMBERS = [
     'RAKFPWUP', 'RAKFPROF', 'RAKFUSER', 'RAKFINIT',
 ]
 
-# The z/OSMF routes as mvsMF 1.1.0 documents them: the two endpoints that
-# resolve the caller themselves are public, everything else needs a login
-# and answers a bare 401 (no browser dialog) without one.
+# The z/OSMF routes as mvsMF documents them (docs/installation.md, "Register
+# the routes"). First match wins, so the specific routes precede /zosmf/*.
+# The two endpoints that resolve the caller themselves are public, everything
+# else needs a login and answers a bare 401 (no browser dialog) without one.
 HTTPPRM0 = """\
 # HTTPPRM0 - written by mvsce (mvslovers/mvs-docker)
 PORT=8080
 DOCROOT=/www
 MOD=MVSMF /zosmf/info                    AUTH=NONE
 MOD=MVSMF /zosmf/services/authenticate   AUTH=NONE
+MOD=MVSMF /zosmf/restconsoles/*          AUTH=TOKEN RES=FACILITY:MVSMF.CONSOLE
 MOD=MVSMF /zosmf/*                       AUTH=TOKEN
 """
 
