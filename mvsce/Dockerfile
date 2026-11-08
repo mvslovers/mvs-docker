@@ -76,16 +76,17 @@ ARG MVSCE_VERSION
 ARG HERCULES_REF
 ARG HERCULES_REPO
 ARG UFSD_VERSION=1.4.0
-ARG HTTPD_VERSION=4.3.0
+ARG HTTPD_VERSION=4.5.1
 ARG MVSMF_VERSION=1.3.0
 ARG FTPD_VERSION=1.2.0
 ARG RAKF_VERSION=2.0.0
 # TK5INST.zip of the RAKF release: trkf200.xmi, the TK5 Update 6 install
 # deck. It has no IEZCTGPL (TK5 has that macro in SYS1.MACLIB, MVS/CE does
 # not); the one of the same tag is added from the repository.
-# The v2.0.0 asset was replaced upstream on 2026-10-22 (same tag, RDEFINE
-# now checks class and profile for duplicates); this is the new one.
-ARG RAKF_ZIP_SHA256=f38359ef3430ca305bbbaf11058811efbba1134a5db7a9d52112756c837f1c1c
+# The v2.0.0 asset was re-uploaded by the maintainer on 2026-10-24, four
+# minutes after commit a4d101e ("fix 80 column error"); the digest changed
+# with it. The previous pin (f38359ef...) no longer matches the release.
+ARG RAKF_ZIP_SHA256=34a3556ac762fb2a176a42eea337c13985a9979fcf2780c57e346c6b24c3ec6d
 ARG RAKF_IEZCTGPL_SHA256=9b4564f758063f2a9eecfe13eef02cef3d57ef06685637e1abe331e5dde9dae0
 
 USER root

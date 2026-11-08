@@ -288,7 +288,7 @@ image. The link `mvsce-builder/mvsce-target` is gone. Use
 | [MVS/CE](https://github.com/MVS-sysgen/sysgen) (`mainframed767/mvsce`) | 3.0.0 | base image |
 | [Hercules](https://github.com/SDL-Hercules-390/hyperion) (SDL-Hyperion, `develop`) | `a742398074` (4.10.0.11783) | `/home/hercules/herctest/herc4x`, replacing MVS/CE's |
 | [UFSD](https://github.com/mvslovers/ufsd) | 1.4.0 | `MVSLOVER.UFSD.LOADLIB` |
-| [HTTPD](https://github.com/mvslovers/httpd) | 4.3.0 | `HTTPD.LINKLIB` |
+| [HTTPD](https://github.com/mvslovers/httpd) | 4.5.1 | `HTTPD.LINKLIB` |
 | [mvsMF](https://github.com/mvslovers/mvsmf) | 1.3.0 | `HTTPD.LINKLIB` |
 | [FTPD](https://github.com/mvslovers/ftpd) | 1.2.0 | `MVSLOVER.FTPD.LOADLIB` |
 | [RAKF](https://github.com/MVS-sysgen/RAKF) | 2.0.0 (TK5 Update 6), replacing the older RAKF of the base image | `SYS1.LPALIB`, `SYS1.LINKLIB`, SMP4 FUNCTION `TRKF200` |

@@ -47,8 +47,10 @@ Session 2 (the CLPA IPL):
      domain 1's minimum MPL in SYS1.PARMLIB(IEAIPS00) from 1 to 10.
   8. Sets up RAKF for the two servers that switch identity at startup:
      the users FTPD and HTTPD, as ftpd's docs/FTPD_RAKF_SETUP.md and
-     httpd's docs/installation.md describe, and the FTPAUTH facility, which
-     only ADMIN may use. RAKF 2.0.0 takes the group of a started task from
+     httpd's docs/installation.md describe, the FTPAUTH facility, which
+     only ADMIN may use, and the MVSMF.CONSOLE facility (RDEFINE, READ for
+     IBMUSER only; HTTPPRM0 refuses routes whose profile is missing).
+     RAKF 2.0.0 takes the group of a started task from
      its USERS entry, and FACILITY SVC244 needs READ for that group, so both
      users are in STARTED (operations authority N), which gets READ on
      FACILITY SVC244 and nothing else; STCGROUP would hold ALTER on all data
@@ -129,15 +131,20 @@ RAKF_MEMBERS = [
     'RAKFPWUP', 'RAKFPROF', 'RAKFUSER', 'RAKFINIT',
 ]
 
-# The z/OSMF routes as mvsMF 1.1.0 documents them: the two endpoints that
-# resolve the caller themselves are public, everything else needs a login
-# and answers a bare 401 (no browser dialog) without one.
+# The z/OSMF routes as mvsMF documents them (docs/installation.md, "Register
+# the routes"). First match wins, so the specific routes precede /zosmf/*.
+# The two endpoints that resolve the caller themselves are public, everything
+# else needs a login and answers a bare 401 (no browser dialog) without one.
+# RES_NOPROFILE=DENY refuses a RES= route whose RAKF profile is missing; the
+# profile for the console route is defined in setup_rakf before HTTPD starts.
 HTTPPRM0 = """\
 # HTTPPRM0 - written by mvsce (mvslovers/mvs-docker)
 PORT=8080
 DOCROOT=/www
+RES_NOPROFILE=DENY
 MOD=MVSMF /zosmf/info                    AUTH=NONE
 MOD=MVSMF /zosmf/services/authenticate   AUTH=NONE
+MOD=MVSMF /zosmf/restconsoles/*          AUTH=TOKEN RES=FACILITY:MVSMF.CONSOLE
 MOD=MVSMF /zosmf/*                       AUTH=TOKEN
 """
 
@@ -810,7 +817,7 @@ EXIT 0
 
 
 def setup_rakf(herc):
-    """RAKF users for FTPD and HTTPD, and FTPAUTH.
+    """RAKF users for FTPD and HTTPD, FTPAUTH, and the mvsMF console profile.
 
     Both servers drop from STC (operations authority) to their own user
     at startup; without that user RAKF answers RAKF0004 and the server
@@ -923,6 +930,24 @@ EXIT 0
             lambda: submit_ascii(brexx_job('FTPAUTH', 'FTPAUTH', rexx,
                                            'RAKFADM')),
             ['REXX'])
+
+    jcl = f"""{jobcard('RDEFCON', 'MVSMF CONSOLE PROFILE', 'RAKFADM')}
+//RDEF     EXEC PGM=IKJEFT01,REGION=4096K
+//SYSPRINT DD  SYSOUT=*
+//SYSTERM  DD  SYSOUT=*
+//SYSTSPRT DD  SYSOUT=*
+//SYSTSIN  DD  *
+RDEFINE MVSMF.CONSOLE CLASS(FACILITY) UACC(NONE)
+/*
+//PERM     EXEC PGM=IKJEFT01,REGION=4096K
+//SYSPRINT DD  SYSOUT=*
+//SYSTERM  DD  SYSOUT=*
+//SYSTSPRT DD  SYSOUT=*
+//SYSTSIN  DD  *
+PERMIT MVSMF.CONSOLE CLASS(FACILITY) ID(IBMUSER) ACCESS(READ)
+/*
+"""
+    run_job(herc, 'RDEFCON', lambda: submit_ascii(jcl), ['RDEF', 'PERM'])
 
     since = len(read_log())
     console(herc, 'RAKFLOAD', 'S RAKFUSER', 'S RAKFPROF')
