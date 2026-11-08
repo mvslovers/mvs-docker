@@ -242,7 +242,7 @@ docker run -d --rm --name mvs --network mvs-net \
   ghcr.io/mvslovers/mvsce
 
 # The mvsMF API is now reachable at http://mvs:8080 from within mvs-dev
-curl -u IBMUSER:SYS1 'http://mvs:8080/zosmf/test?fn=version'
+curl -u IBMUSER:SYS1 'http://mvs:8080/zosmf/info'
 ```
 
 Set `MVSMF_HOST=mvs` and `MVSMF_PORT=8080` in your project's `.env` file.
@@ -289,7 +289,7 @@ image. The link `mvsce-builder/mvsce-target` is gone. Use
 | [Hercules](https://github.com/SDL-Hercules-390/hyperion) (SDL-Hyperion, `develop`) | `a742398074` (4.10.0.11783) | `/home/hercules/herctest/herc4x`, replacing MVS/CE's |
 | [UFSD](https://github.com/mvslovers/ufsd) | 1.4.0 | `MVSLOVER.UFSD.LOADLIB` |
 | [HTTPD](https://github.com/mvslovers/httpd) | 4.5.1 | `HTTPD.LINKLIB` |
-| [mvsMF](https://github.com/mvslovers/mvsmf) | 1.3.0 | `HTTPD.LINKLIB` |
+| [mvsMF](https://github.com/mvslovers/mvsmf) | 1.4.1 | `HTTPD.LINKLIB` |
 | [FTPD](https://github.com/mvslovers/ftpd) | 1.2.0 | `MVSLOVER.FTPD.LOADLIB` |
 | [RAKF](https://github.com/MVS-sysgen/RAKF) | 2.0.0 (TK5 Update 6), replacing the older RAKF of the base image | `SYS1.LPALIB`, `SYS1.LINKLIB`, SMP4 FUNCTION `TRKF200` |
 
@@ -380,12 +380,19 @@ only:
   other user's; it fails if either of the two is missing,
 - adds `S UFSD` / `S HTTPD` / `S FTPD` to `SYS1.PARMLIB(COMMND00)`.
 
+**No JESSPOOL profile is defined.** mvsMF 1.4.0 shows a user only its own
+jobs unless a profile of the RAKF class `JESSPOOL` says otherwise, and the
+image leaves the class empty. The FTPD and mvsMF suites that test the class
+expect that: FTPD's test 18 stops on any `JESSPOOL` line in `PROFILES` and
+creates its own profiles on a clean container.
+
 It checks RAKF by content, not by return code, and **fails unless** the
 installed `ICHSFR00` has the text `UNDEFINED CLASS` / `RAKF0012` and the
 class descriptor table in `ICHSEC00` has the entry `JESSPOOL`, and the same
 two are found in the storage of the CLPA-IPLed system. It then starts all
 three servers and **fails unless** the `UFSD000I`/`HTTPD000I`/
-`FTPD000I` banners and `/zosmf/test?fn=version` report the pinned versions,
+`FTPD000I` banners and `/zosmf/info` (`zosmf_full_version`) report the pinned versions,
+`/zosmf/restconsoles/v1/log` answers 401 without a login and 200 for `IBMUSER`,
 neither server logs `RAKF0004`, `HTTPD004W`, `FTPD004W`, `HTTPD012E` or
 `APF SETUP FAILED`, HTTPD logs `HTTPD002I AUTHORIZED BY`, FTPD
 `FTPD004I STC IDENTITY SET TO FTPD/USER`, `FTPD001I READY` follows, an FTP
@@ -413,11 +420,11 @@ docker run -d --rm --name mvs-build \
   ghcr.io/mvslovers/mvsce
 
 # Wait for MVS to IPL and HTTPD to come up, then check the mvsMF level
-curl -u IBMUSER:SYS1 'http://localhost:8080/zosmf/test?fn=version'
+curl -u IBMUSER:SYS1 'http://localhost:8080/zosmf/info'
 ```
 
 mvsMF answers before TSO is up: on an idle 4-CPU host the authenticated
-`fn=version` returned 200 about 2 s after `docker run`, and `IKT005I TCAS IS
+`/zosmf/info` returned 200 about 2 s after `docker run`, and `IKT005I TCAS IS
 INITIALIZED` followed about 1.5 s later. Wait for each separately.
 `/zosmf/info` answers 401 without credentials, so a readiness probe has to
 authenticate.

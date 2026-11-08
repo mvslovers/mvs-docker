@@ -37,7 +37,7 @@
 #
 # Every instance carries the label io.mvslovers.target=NAME and goes away
 # completely when it stops (Docker: --rm with its anonymous volumes).
-# `up` returns once the authenticated mvsMF fn=version answers; it does not
+# `up` returns once the authenticated mvsMF /zosmf/info answers; it does not
 # wait for TSO or FTP (see the README for when those are ready).
 #
 # Environment: MVSCE_TARGET_HOST (= --host), MVSCE_TARGET_RUNTIME,
@@ -501,7 +501,7 @@ start_once() {
         if [ -n "$addr" ] && [ -n "$port" ]; then
             code=$(curl -s -m 5 -o /dev/null -w '%{http_code}' \
                    -u "$MVS_USER:$MVS_PASS" \
-                   "http://$addr:$port/zosmf/test?fn=version" || true)
+                   "http://$addr:$port/zosmf/info" || true)
         fi
         [ "$code" = 200 ] && break
         state=$(rt_state "$c")
