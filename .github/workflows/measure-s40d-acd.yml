@@ -1,16 +1,10 @@
-name: Measure S40D A/R (#48)
+name: Measure S40D fix (#48)
 
-# Measurement only, never merged (mvs-docker#48): arm64 builds of mvsce.
-#   A  unchanged (control): every job runs with REGION=0M
-#   R  the AMBLIST jobs run with REGION=4096K
-# The dump of the failing builds shows the region as the whole private area
-# (PQE RSI 94C000, no free block) and three GETMAINs for subpools 230 and
-# 229 failing in a row; a passing AMBLIST step ends with VIRT 9280K and
-# SYS 236K-244K, which is those same 9520K.
-# Every build prints the console and RAKFOLD's output, and an AMDPRDMP
-# CPUDATA/SUMMARY of SYS1.DUMP00-02; a failing one also EREP and an
-# AMDPRDMP FORMAT. Earlier variants: C (CLPA in session 1) and D (an
-# IEFBR14 job first), runs 43604085675 and 43607354653.
+# Measurement only, never merged (mvs-docker#48): 24 arm64 builds of the
+# commit of pull request #53 (jobcard() default REGION=6144K instead of 0M),
+# checked out as it is, without this branch's diagnostics.
+# Earlier here: variants A/C/D (runs 43604085675, 43607354653) and A/R with
+# the AMBLIST jobs in REGION=4096K (run 43648184011).
 
 on:
   pull_request:
@@ -21,18 +15,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        series: [A1, R1, R2]   # the first letter is the variant
+        series: [F1, F2]
         n: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 75
     name: ${{ matrix.series }} ${{ matrix.n }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ab50d8edb92eec9ac646cf54558b85da6a02ecbb   # fix/mvsce-job-region, #53
       - name: Build
         run: |
-          series=${{ matrix.series }}
           docker buildx build --progress plain \
-            --build-arg S40D_VARIANT=${series:0:1} \
             -f mvsce/Dockerfile mvsce 2>&1 | tee build.log
           exit ${PIPESTATUS[0]}
       - uses: actions/upload-artifact@v6
