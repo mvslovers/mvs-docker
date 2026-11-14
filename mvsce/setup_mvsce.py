@@ -261,8 +261,109 @@ def dump_printer_tail(lines=60):
         print(f'    > {l}', flush=True)
 
 
+# ---- Measurement only (mvs-docker#48, never merged) ----------------------
+
+S40D_VARIANT = os.environ.get('S40D_VARIANT', 'A')
+DUMP_DSNS = ('SYS1.DUMP00', 'SYS1.DUMP01', 'SYS1.DUMP02')
+DIAG_DONE = False
+
+EREP_JCL = """{card}
+//EREP     EXEC PGM=IFCEREP1,PARM='CARD'
+//SERLOG   DD DSN=SYS1.LOGREC,DISP=SHR
+//TOURIST  DD SYSOUT=A,DCB=BLKSIZE=133
+//EREPPT   DD SYSOUT=A,DCB=BLKSIZE=133
+//ACCDEV   DD DUMMY
+//DIRECTWK DD UNIT=SYSDA,SPACE=(CYL,5,,CONTIG)
+//SYSIN    DD *
+PRINT=PS
+TYPE=S
+ACC=N
+ENDPARM
+/*
+"""
+
+
+def prdmp_jcl(name, verbs):
+    """AMDPRDMP of each SYS1.DUMPnn, one step per data set."""
+    steps = ''.join(f"""//PRD{i}     EXEC PGM=AMDPRDMP,REGION=2048K
+//SYSPRINT DD SYSOUT=A
+//PRINTER  DD SYSOUT=A
+//SYSUT1   DD UNIT=SYSDA,SPACE=(CYL,(10,10))
+//TAPE     DD DSN={dsn},DISP=SHR
+//SYSIN    DD *
+{verbs}
+ END
+/*
+""" for i, dsn in enumerate(DUMP_DSNS))
+    return f"{jobcard(name, 'AMDPRDMP')}\n{steps}"
+
+
+def diag_job(herc, name, jcl, timeout=600, max_lines=20000):
+    """Run a job without judging it; print its console lines and its printer
+    output to the build log."""
+    try:
+        offset = os.path.getsize(PRINTER)
+    except FileNotFoundError:
+        offset = 0
+    since = len(read_log())
+    submit_ascii(jcl)
+    start = time.time()
+    while time.time() - start < timeout:
+        text = read_log()[since:]
+        if f'$HASP250 {name}' in text or f'$HASP310 {name}' in text:
+            break
+        time.sleep(3)
+    done = time.time() - start < timeout
+    if not done:
+        # e.g. an unanswered WTOR: cancel it so it does not hold the initiator
+        herc.stdin.write(f'/C {name}\n'.encode())
+        herc.stdin.flush()
+        time.sleep(30)
+    log(f'  DIAG {name}: {"done" if done else "TIMEOUT, cancelled"}; console:')
+    for l in read_log()[since:].splitlines():
+        if not re.match(r'^\d\d:\d\d:\d\d HHC0(1040|1206)I', l):
+            print(f'    | {l}', flush=True)
+    time.sleep(5)
+    try:
+        with open(PRINTER, 'r', errors='replace') as f:
+            f.seek(offset)
+            lines = [l.rstrip() for l in f.read().splitlines() if l.strip()]
+    except FileNotFoundError:
+        lines = []
+    log(f'  DIAG {name}: printer output, {len(lines)} lines:')
+    for l in lines[:max_lines]:
+        print(f'    > {l}', flush=True)
+    if len(lines) > max_lines:
+        log(f'  DIAG {name}: {len(lines) - max_lines} more lines not shown')
+
+
+def print_console(what):
+    lines = [l for l in read_log().splitlines()
+             if not re.match(r'^\d\d:\d\d:\d\d HHC0(1040|1206)I', l)]
+    log(f'  DIAG: {what}, {len(lines)} lines:')
+    for l in lines:
+        print(f'    | {l}', flush=True)
+
+
+def diagnose(herc):
+    """On a failure: the console since the IPL, LOGREC software records and
+    the SVC dumps formatted (RTM2 requests one before a 40D MEMTERM)."""
+    global DIAG_DONE
+    if DIAG_DONE:
+        return
+    DIAG_DONE = True
+    print_console('console log since the IPL')
+    diag_job(herc, 'DIAGEREP', EREP_JCL.format(card=jobcard('DIAGEREP', 'EREP')))
+    diag_job(herc, 'DIAGDUMP', prdmp_jcl('DIAGDUMP', ' CPUDATA\n SUMMARY\n FORMAT'),
+             timeout=900, max_lines=40000)
+
+
 def fail(herc, msg):
     log(f'ERROR: {msg}')
+    try:
+        diagnose(herc)
+    except Exception as e:
+        log(f'  DIAG failed: {e}')
     dump_log_tail()
     dump_printer_tail()
     herc.kill()
@@ -308,8 +409,14 @@ def run_job(herc, name, submit, steps, timeout=JOB_TIMEOUT):
     """
     since = len(read_log())
     submit()
-    if not wait_for_string(f'$HASP395 {name}', timeout, since):
-        fail(herc, f'job {name} did not complete')
+    start = time.time()
+    while f'$HASP395 {name}' not in read_log()[since:]:
+        if 'CODE S40D' in read_log()[since:]:
+            time.sleep(10)
+            fail(herc, f'job {name}: S40D')
+        if time.time() - start > timeout:
+            fail(herc, f'job {name} did not complete')
+        time.sleep(2)
     time.sleep(2)
     pat = re.compile(r'IEFACTRT (\S+)\s*/[^/]*/[^/]*/[^/]*/([^/]+)/'
                      + re.escape(name) + r'\s*$')
@@ -1131,6 +1238,25 @@ def patch_shutdown_rc():
     log(f'{SHUTDOWN_RC}: P FTPD / P HTTPD / P UFSD and a 1-CPU poweroff rule added')
 
 
+MVSCE_RC = '/MVSCE/conf/mvsce.rc'
+
+
+def set_ipl_reply(reply):
+    """Variant C: the reply mvsce.rc's hao rule gives to IEA101A."""
+    # the rule for IEA101A is the bare 'hao cmd /' (the other one is
+    # 'hao cmd /r 0,noreq' for $HASP426)
+    with open(MVSCE_RC, newline='') as f:
+        rc = f.read()
+    pat = r'(?m)^hao cmd /(CLPA)?(\r?)$'
+    if len(re.findall(pat, rc)) != 1:
+        log(f'ERROR: {MVSCE_RC}: not exactly one IEA101A "hao cmd /" line')
+        sys.exit(1)
+    new = re.sub(pat, lambda m: f'hao cmd /{reply}{m.group(2)}', rc)
+    with open(MVSCE_RC, 'w', newline='') as f:
+        f.write(new)
+    log(f'  {MVSCE_RC}: IEA101A reply now "{reply}"')
+
+
 def start_hercules(session):
     """IPL MVS in a new Hercules process; its log is /tmp/hercules-build-<session>.log."""
     global LOGFILE
@@ -1215,11 +1341,36 @@ def main():
             sys.exit(1)
     patch_shutdown_rc()
 
+    log(f'S40D_VARIANT={S40D_VARIANT} (measurement, mvs-docker#48)')
+    if S40D_VARIANT == 'C':
+        set_ipl_reply('CLPA')
     # Session 1: RAKF 2.0.0, and CLPA for the next IPL.
     herc = start_hercules(1)
+    if S40D_VARIANT == 'C':
+        set_ipl_reply('')
+        if not re.search(r"HHC00013I '/' input entered for console 0:0009: \"CLPA\"",
+                         read_log()):
+            fail(herc, 'variant C: CLPA was not the reply to IEA101A')
+        log('  variant C: IPL with CLPA confirmed on the console')
+    if S40D_VARIANT == 'D':
+        run_job(herc, 'BR14', lambda: submit_ascii(
+            f"{jobcard('BR14', 'IEFBR14')}\n//BR14     EXEC PGM=IEFBR14\n"), ['BR14'])
+    try:
+        offset = os.path.getsize(PRINTER)
+    except FileNotFoundError:
+        offset = 0
     log('RAKF before the install (information only):')
     for what, found in rakf_content(herc, 'RAKFOLD')[0].items():
         log(f'  {what}: {"yes" if found else "no"}')
+    time.sleep(5)
+    with open(PRINTER, 'r', errors='replace') as f:
+        f.seek(offset)
+        lines = [l.rstrip() for l in f.read().splitlines() if l.strip()]
+    log(f'  DIAG: RAKFOLD printer output, {len(lines)} lines:')
+    for l in lines:
+        print(f'    > {l}', flush=True)
+    print_console('console after RAKFOLD (passing run)')
+    diag_job(herc, 'DIAGDMPS', prdmp_jcl('DIAGDMPS', ' CPUDATA\n SUMMARY'), max_lines=3000)
     install_rakf(herc)
     sfr_len, sec_len = check_rakf_content(herc, 'RAKFCHK')
     set_clpa(herc, True)
