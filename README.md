@@ -286,7 +286,7 @@ image. The link `mvsce-builder/mvsce-target` is gone. Use
 | Component | Version | Where |
 |-----------|---------|-------|
 | [MVS/CE](https://github.com/MVS-sysgen/sysgen) (`mainframed767/mvsce`) | 3.0.0 | base image |
-| [Hercules](https://github.com/SDL-Hercules-390/hyperion) (SDL-Hyperion, `develop`) | `a742398074` (4.10.0.11783) | `/home/hercules/herctest/herc4x`, replacing MVS/CE's |
+| [Hercules](https://github.com/SDL-Hercules-390/hyperion) (SDL-Hyperion, `develop`) | `7607b082de` (4.10.0.11799) | `/home/hercules/herctest/herc4x`, replacing MVS/CE's |
 | [UFSD](https://github.com/mvslovers/ufsd) | 1.4.0 | `MVSLOVER.UFSD.LOADLIB` |
 | [HTTPD](https://github.com/mvslovers/httpd) | 4.5.1 | `HTTPD.LINKLIB` |
 | [mvsMF](https://github.com/mvslovers/mvsmf) | 1.4.1 | `HTTPD.LINKLIB` |
@@ -587,7 +587,7 @@ level, `DELETE` included, can be rehearsed.
 | Component | Version | Where |
 |-----------|---------|-------|
 | [TK5](https://www.prince-webdesign.nl/tk5) | Update 5 (2026-02-18), minimal configuration | `/tk5`, as unpacked, without TK5's own Hercules builds and its PDF manuals |
-| [Hercules](https://github.com/SDL-Hercules-390/hyperion) (SDL-Hyperion, `develop`) | `a742398074` (4.10.0.11783) | `/opt/hercules` |
+| [Hercules](https://github.com/SDL-Hercules-390/hyperion) (SDL-Hyperion, `develop`) | `7607b082de` (4.10.0.11799) | `/opt/hercules` |
 | [UFSD](https://github.com/mvslovers/ufsd) | 1.4.0 (`TUFS140`) | `UFSD.LINKLIB` |
 | [HTTPD](https://github.com/mvslovers/httpd) | 4.3.0 (`THTP430`) | `HTTPD.LINKLIB` |
 | [mvsMF](https://github.com/mvslovers/mvsmf) | 1.3.0 (`TZMF130`) | `MVSMF.LINKLIB` |
