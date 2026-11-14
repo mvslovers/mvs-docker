@@ -13,8 +13,9 @@
 # TK5 brings its own Hercules builds (SDL 4.9.1 for 64-bit Linux, 4.3.99
 # elsewhere). They are dropped for Hyperion at HERCULES_REF, built the way
 # ../mvsce builds it, so both images run the same emulator: the console
-# fix SDL-Hercules-390/hyperion#889 and the X'75' TCP/IP fixes are in it,
-# and arm64 gets the same build as amd64.
+# fixes SDL-Hercules-390/hyperion#889 and #893, the X'75' TCP/IP fixes and
+# the fix for a PCI raised twice (#907) are in it, and arm64 gets the same
+# build as amd64.
 #
 # TK5 is configured through its own hooks only: the ${VAR:=default}
 # settings in conf/tk5.cnf and its rc files (ENV below). conf/, scripts/
@@ -23,7 +24,7 @@
 ARG TK5_UPDATE=5
 ARG TK5_URL=https://www.prince-webdesign.nl/images/downloads/mvs-tk5.zip
 ARG TK5_SHA256=710d002843631322810a276dd42c793fda458548dc64d86e2914a62db7425f84
-ARG HERCULES_REF=a742398074b24c6e9dfff1e4065a55b69a8a4883
+ARG HERCULES_REF=7607b082de6abfdcf0582bfa90dd2292a94cc721
 ARG HERCULES_REPO=https://github.com/SDL-Hercules-390/hyperion.git
 ARG UFSD_VERSION=1.4.0
 ARG HTTPD_VERSION=4.3.0
