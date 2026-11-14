@@ -1,0 +1,37 @@
+name: measure-48
+
+# Measurement only (mvs-docker#48, SDL-Hercules-390/hyperion#907): build the
+# mvsce image on arm64 repeatedly with two Hercules levels. Lives on a
+# measurement branch; never merged.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        ref:
+          - 5648e0e7957e96a9b4b10c0ea4a1c3bb22b1437c
+          - 7607b082de6abfdcf0582bfa90dd2292a94cc721
+        n: [1, 2, 3, 4, 5, 6, 7, 8]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    name: ${{ matrix.ref }} #${{ matrix.n }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build mvsce (arm64)
+        run: |
+          docker buildx build --progress plain \
+            --build-arg HERCULES_REF=${{ matrix.ref }} \
+            -f mvsce/Dockerfile mvsce 2>&1 | tee build.log
+          exit ${PIPESTATUS[0]}
+      - name: Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.ref }}-${{ matrix.n }}
+          path: build.log
