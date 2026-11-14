@@ -31,7 +31,7 @@
 # HERCULES_REF.
 
 ARG MVSCE_VERSION=3.0.0
-ARG HERCULES_REF=7607b082de6abfdcf0582bfa90dd2292a94cc721
+ARG HERCULES_REF=a742398074b24c6e9dfff1e4065a55b69a8a4883
 ARG HERCULES_REPO=https://github.com/SDL-Hercules-390/hyperion.git
 
 # Debian trixie, as the runtime of mainframed767/mvsce, so the binaries
