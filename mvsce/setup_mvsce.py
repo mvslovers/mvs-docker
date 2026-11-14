@@ -263,6 +263,8 @@ def dump_printer_tail(lines=60):
 
 def fail(herc, msg):
     log(f'ERROR: {msg}')
+    m = HASP099.search(read_log())
+    log(f'TRACE at failure: hasp099={m.group(1) if m else "none"}')
     dump_log_tail()
     dump_printer_tail()
     herc.kill()
@@ -1155,8 +1157,41 @@ def start_hercules(session):
     if not wait_for_string('INIT'):
         fail(herc, 'JES2 initiators not ready')
     log('MVS is up')
+    if os.environ.get('STARTUP_WAIT') == 'hasp099':
+        # Measurement (#48): wait until JES2 reports its start complete,
+        # then 30 s more, before the first job.
+        log('STARTUP_WAIT=hasp099: waiting for $HASP099...')
+        if wait_for_hasp099(300):
+            log('  $HASP099 seen, 30 s more')
+        else:
+            log('  no $HASP099 within 300 s, 30 s more anyway')
+        time.sleep(30)
     time.sleep(5)
+    trace_startup()
     return herc
+
+
+HASP099 = re.compile(r'^(\d\d:\d\d:\d\d) (?!HHC).*\$HASP099', re.M)
+
+
+def wait_for_hasp099(timeout):
+    start = time.time()
+    while time.time() - start < timeout:
+        if HASP099.search(read_log()):
+            return True
+        time.sleep(2)
+    return False
+
+
+def trace_startup():
+    """Measurement (#48): the console so far, and when $HASP099 came."""
+    lines = [l for l in read_log().splitlines()
+             if not re.match(r'^\d\d:\d\d:\d\d HHC0(1040|1206)I', l)]
+    m = HASP099.search(read_log())
+    log(f'TRACE now={time.strftime("%H:%M:%S")} hasp099={m.group(1) if m else "none"} '
+        f'lines={len(lines)}')
+    for l in lines:
+        print(f'    T| {l}', flush=True)
 
 
 def purge_spool(herc):

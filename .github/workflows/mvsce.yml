@@ -15,12 +15,7 @@ on:
       - "mvsce/setup_mvsce.py"
       - "mvsce/entrypoint.sh"
       - ".github/workflows/mvsce.yml"
-  pull_request:
-    paths:
-      - "mvsce/Dockerfile"
-      - "mvsce/setup_mvsce.py"
-      - "mvsce/entrypoint.sh"
-      - ".github/workflows/mvsce.yml"
+  # Measurement branch (#48): no pull_request builds here, see measure-s40d.yml.
   workflow_dispatch:
 
 env:

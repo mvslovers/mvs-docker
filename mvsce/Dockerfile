@@ -83,6 +83,8 @@ ARG HTTPD_VERSION=4.5.1
 ARG MVSMF_VERSION=1.4.1
 ARG FTPD_VERSION=1.2.0
 ARG RAKF_VERSION=2.0.0
+# Measurement (#48): empty = current timing, hasp099 = wait for $HASP099 + 30 s.
+ARG STARTUP_WAIT=
 # TK5INST.zip of the RAKF release: trkf200.xmi, the TK5 Update 6 install
 # deck. It has no IEZCTGPL (TK5 has that macro in SYS1.MACLIB, MVS/CE does
 # not); the one of the same tag is added from the repository.
@@ -134,7 +136,7 @@ COPY setup_mvsce.py /tmp/setup_mvsce.py
 # layer; the base image's entrypoint copies them to /dasd.
 RUN cd /MVSCE && UFSD_VERSION=${UFSD_VERSION} HTTPD_VERSION=${HTTPD_VERSION} \
     MVSMF_VERSION=${MVSMF_VERSION} FTPD_VERSION=${FTPD_VERSION} \
-    HERCULES_REF=${HERCULES_REF} python3 -u /tmp/setup_mvsce.py \
+    HERCULES_REF=${HERCULES_REF} STARTUP_WAIT=${STARTUP_WAIT} python3 -u /tmp/setup_mvsce.py \
     && rm -f /tmp/ufsd.xmit /tmp/httpd.xmit /tmp/mvsmf.xmit /tmp/ftpd.xmit \
        /tmp/setup_mvsce.py \
     && rm -rf /tmp/rakf
