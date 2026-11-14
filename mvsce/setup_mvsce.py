@@ -20,7 +20,17 @@ from the load modules themselves:
 The build runs in two Hercules sessions, because RAKF 2.0.0 replaces
 ICHSFR00 and ICHRIN00 in SYS1.LPALIB and only an IPL with CLPA loads them.
 
-Session 1 (the IPL of the base image):
+Session 1 (an IPL of the base image, with CLPA):
+
+  The reply to IEA101A is 'r 0,clpa' instead of an empty one, so the PLPA
+  is built from SYS1.LPALIB instead of being taken over from the base
+  image's SYS1.PAGELPA. Without it the first job of the session (RAKFOLD)
+  failed on GitHub's arm64 runners in about one build in four or five: S80A
+  (R-form GETMAIN) in its AMBLIST step, then S40D, because RTM2 found no
+  storage either (mvs-docker#48). With CLPA: 0 of 12 (run 43607354653),
+  as against 3 of 24 without it in the same measurement (run 43604085675).
+  The rc file is put back afterwards, so the image's own IPLs reply as
+  before.
 
   1. Removes the old TRKF200 from the SMP inventory (UCLIN DEL on CDS and
      ACDS), RECEIVEs the TK5 package's XMIT (TK5INST.zip of RAKF v2.0.0),
@@ -1131,6 +1141,27 @@ def patch_shutdown_rc():
     log(f'{SHUTDOWN_RC}: P FTPD / P HTTPD / P UFSD and a 1-CPU poweroff rule added')
 
 
+MVSCE_RC = '/MVSCE/conf/mvsce.rc'
+IEA101A_RULE = re.compile(r'(?m)^hao cmd /(r 0,clpa)?(\r?)$')
+
+
+def set_ipl_reply(reply):
+    """The reply mvsce.rc's hao rule gives to IEA101A: '' or 'r 0,clpa'.
+
+    The rule for IEA101A is the bare 'hao cmd /'; the other one, 'hao cmd
+    /r 0,noreq', answers $HASP426. A bare 'CLPA' would not do: NIP rejects
+    it with IEA305A INVALID REPLY FORMAT, and the rule answers that again
+    until the IPL times out.
+    """
+    with open(MVSCE_RC, newline='') as f:
+        rc = f.read()
+    if len(IEA101A_RULE.findall(rc)) != 1:
+        log(f'ERROR: {MVSCE_RC}: not exactly one IEA101A rule (hao cmd /)')
+        sys.exit(1)
+    with open(MVSCE_RC, 'w', newline='') as f:
+        f.write(IEA101A_RULE.sub(lambda m: f'hao cmd /{reply}{m.group(2)}', rc))
+
+
 def start_hercules(session):
     """IPL MVS in a new Hercules process; its log is /tmp/hercules-build-<session>.log."""
     global LOGFILE
@@ -1215,8 +1246,16 @@ def main():
             sys.exit(1)
     patch_shutdown_rc()
 
-    # Session 1: RAKF 2.0.0, and CLPA for the next IPL.
+    # Session 1, with CLPA (see the module docstring, mvs-docker#48):
+    # RAKF 2.0.0, and CLPA for the next IPL.
+    set_ipl_reply('r 0,clpa')
     herc = start_hercules(1)
+    set_ipl_reply('')
+    if (not re.search(r"HHC00013I '/' input entered for console 0:0009: "
+                      r'"r 0,clpa"', read_log())
+            or 'IEA305A' in read_log()):
+        fail(herc, 'session 1: CLPA was not accepted as the reply to IEA101A')
+    log('  session 1 IPLed with CLPA')
     log('RAKF before the install (information only):')
     for what, found in rakf_content(herc, 'RAKFOLD')[0].items():
         log(f'  {what}: {"yes" if found else "no"}')
