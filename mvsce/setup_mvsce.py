@@ -189,8 +189,16 @@ def log(msg):
     print(f'[setup {elapsed:6.1f}s] {msg}', flush=True)
 
 
-def jobcard(name, title, group=None, region='0M'):
-    """group: run connected to that RAKF group instead of the default one."""
+def jobcard(name, title, group=None, region='6144K'):
+    """group: run connected to that RAKF group instead of the default one.
+
+    region: on the JOB card it replaces every REGION= of the steps. Never
+    0M: that makes the region the whole private area (9520K), and a program
+    that takes what it can get with a variable GETMAIN, as AMBLIST does,
+    leaves no page for subpools 229 and 230. CLOSE then ends S80A, recovery
+    gets no storage either, and the address space is ended with S40D
+    (mvs-docker#48).
+    """
     return JOBCARD.format(name=name, title=title[:20], user=USER, pw=PASSWORD,
                           region=region,
                           group=f',\n//             GROUP={group}' if group else '')
