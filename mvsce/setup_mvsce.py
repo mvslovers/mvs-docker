@@ -556,7 +556,11 @@ def read_load_modules(herc, name, modules):
  LISTLOAD DDN=LIB,MEMBER={member},OUTPUT=MODLIST
 /*
 """ for i, (dsn, member) in enumerate(modules, 1))
-    jcl = f"{jobcard(name, 'AMBLIST')}\n{steps}"
+    # variant R: a bounded region. With REGION=0M the region is the whole
+    # private area and AMBLIST's variable GETMAIN takes all of it (VIRT 9280K
+    # + SYS 240K = 9520K), so subpool 229/230 cannot get one more page.
+    region = '4096K' if S40D_VARIANT == 'R' else '0M'
+    jcl = f"{jobcard(name, 'AMBLIST', region=region)}\n{steps}"
     try:
         offset = os.path.getsize(PRINTER)
     except FileNotFoundError:
@@ -1371,6 +1375,12 @@ def main():
     log(f'  DIAG: RAKFOLD printer output, {len(lines)} lines:')
     for l in lines:
         print(f'    > {l}', flush=True)
+    used = re.findall(r'IEF374I STEP /(AMB\d) .*VIRT +(\d+)K SYS +(\d+)K',
+                      '\n'.join(lines))
+    log(f'  DIAG: RAKFOLD storage (step, VIRT K, SYS K): {used}')
+    if S40D_VARIANT == 'R' and (len(used) != 2 or
+                                any(int(v) > 4160 for _, v, _ in used)):
+        fail(herc, 'variant R: the AMBLIST steps did not run in a 4096K region')
     print_console('console after RAKFOLD (passing run)')
     diag_job(herc, 'DIAGDMPS', prdmp_jcl('DIAGDMPS', ' CPUDATA\n SUMMARY'), max_lines=3000)
     install_rakf(herc)
