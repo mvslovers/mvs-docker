@@ -261,8 +261,57 @@ def dump_printer_tail(lines=60):
         print(f'    > {l}', flush=True)
 
 
+EREP_JCL = """{card}
+//EREP     EXEC PGM=IFCEREP1,PARM='CARD'
+//SERLOG   DD DSN=SYS1.LOGREC,DISP=SHR
+//TOURIST  DD SYSOUT=A,DCB=BLKSIZE=133
+//EREPPT   DD SYSOUT=A,DCB=BLKSIZE=133
+//ACCDEV   DD DUMMY
+//DIRECTWK DD UNIT=SYSDA,SPACE=(CYL,5,,CONTIG)
+//SYSIN    DD *
+PRINT=PS
+TYPE=S
+ACC=N
+ENDPARM
+/*
+"""
+
+
+def diagnose(herc):
+    """Measurement only (mvs-docker#48): the whole console log since the IPL,
+    and the software records of SYS1.LOGREC, before the build gives up."""
+    log('  DIAG: console log since the IPL:')
+    for l in read_log().splitlines():
+        print(f'    | {l}', flush=True)
+    try:
+        offset = os.path.getsize(PRINTER)
+    except FileNotFoundError:
+        offset = 0
+    since = len(read_log())
+    submit_ascii(EREP_JCL.format(card=jobcard('DIAGEREP', 'EREP')))
+    ok = wait_for_string('$HASP395 DIAGEREP', 300, since)
+    log(f'  DIAG: EREP {"ended" if ok else "did not end"}; console after it:')
+    for l in read_log()[since:].splitlines():
+        print(f'    | {l}', flush=True)
+    time.sleep(10)
+    try:
+        with open(PRINTER, 'r', errors='replace') as f:
+            f.seek(offset)
+            text = f.read()
+    except FileNotFoundError:
+        text = ''
+    log('  DIAG: printer output of EREP:')
+    for l in text.splitlines():
+        if l.strip():
+            print(f'    > {l.rstrip()}', flush=True)
+
+
 def fail(herc, msg):
     log(f'ERROR: {msg}')
+    try:
+        diagnose(herc)
+    except Exception as e:
+        log(f'  DIAG failed: {e}')
     dump_log_tail()
     dump_printer_tail()
     herc.kill()
