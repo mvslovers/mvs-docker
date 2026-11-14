@@ -1247,7 +1247,7 @@ def set_ipl_reply(reply):
     # 'hao cmd /r 0,noreq' for $HASP426)
     with open(MVSCE_RC, newline='') as f:
         rc = f.read()
-    pat = r'(?m)^hao cmd /(CLPA)?(\r?)$'
+    pat = r'(?m)^hao cmd /(r 0,clpa)?(\r?)$'
     if len(re.findall(pat, rc)) != 1:
         log(f'ERROR: {MVSCE_RC}: not exactly one IEA101A "hao cmd /" line')
         sys.exit(1)
@@ -1343,14 +1343,16 @@ def main():
 
     log(f'S40D_VARIANT={S40D_VARIANT} (measurement, mvs-docker#48)')
     if S40D_VARIANT == 'C':
-        set_ipl_reply('CLPA')
+        set_ipl_reply('r 0,clpa')
     # Session 1: RAKF 2.0.0, and CLPA for the next IPL.
     herc = start_hercules(1)
     if S40D_VARIANT == 'C':
         set_ipl_reply('')
-        if not re.search(r"HHC00013I '/' input entered for console 0:0009: \"CLPA\"",
-                         read_log()):
-            fail(herc, 'variant C: CLPA was not the reply to IEA101A')
+        # a bare 'CLPA' is rejected with IEA305A, and the hao rule then
+        # answers it again forever
+        if not re.search(r"HHC00013I '/' input entered for console 0:0009: \"r 0,clpa\"",
+                         read_log()) or 'IEA305A' in read_log():
+            fail(herc, 'variant C: CLPA was not accepted as the reply to IEA101A')
         log('  variant C: IPL with CLPA confirmed on the console')
     if S40D_VARIANT == 'D':
         run_job(herc, 'BR14', lambda: submit_ascii(
