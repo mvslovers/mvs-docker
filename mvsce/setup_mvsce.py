@@ -354,7 +354,22 @@ SNAP_RANGES = ('990000-99FFFF', '9A0000-9AFFFF', '9B0000-9BFFFF', '9C0000-9CFFFF
 SNAP_FIRST, SNAP_LAST = 6, 34   # snapshots kept: the first and the last ones
 SNAPS = []
 SNAP = {'run': False, 'armed': False, 'stops': 0, 'taken': 0, 'other': 0,
-        'thread': None}
+        'thread': None, 'mode': 'S', 'orig': None}
+
+# Variant T: the same picture without the breakpoint. An armed breakpoint
+# puts Hercules on its instruction-by-instruction path for the whole job,
+# and with that all 48 builds of variant S came out alike (SYS 236K, none
+# failed): the measurement removed what it was to measure. Here the SVC 10
+# and the instruction behind it are replaced by DIAGNOSE F04 (Hercules:
+# instruction stepping on), with the break range preset to the address
+# behind it. The CPU runs at full speed until it gets there, stops once,
+# the four bytes are put back, storage is displayed, and the PSW is set
+# back onto the SVC 10 before stepping is switched off again ('g'). One
+# stop per build, the one of the first step, and no second trap: putting
+# it in again behind a running CPU could hit a task that is to resume at
+# D0A042.
+TRAP_INST = '83000F04'
+TRAP_NEXT = 'D0A044'
 
 
 def snap_send(herc, *lines):
@@ -363,10 +378,9 @@ def snap_send(herc, *lines):
 
 
 def snap_watch(herc, logfile):
-    """Answer every stop at the breakpoint: display storage if it is the
-    GETMAIN in question, and start the CPU again in any case."""
-    stop = re.compile(r'HHC02324I PSW=([0-9A-F]{10}' + SNAP_BREAK +
-                      r') INST=([0-9A-F]{4})')
+    """Answer every stop of the CPU: display storage if it is the GETMAIN
+    in question, and start the CPU again in any case."""
+    stop = re.compile(r'HHC02324I PSW=([0-9A-F]{16}) INST=([0-9A-F]{4})')
     reg = re.compile(r'GR(\d\d)=([0-9A-F]{8})')
     buf = ''
     with open(logfile, 'rb') as f:
@@ -392,14 +406,26 @@ def snap_watch(herc, logfile):
             buf = ''
             SNAP['stops'] += 1
             n = SNAP['stops']
-            if not (SNAP['armed'] and m.group(2) == '0A0A'
-                    and regs.get('00') == SNAP_R0):
+            ia = m.group(1)[10:]
+            if SNAP['mode'] == 'T':
+                hit = ia == TRAP_NEXT
+                resume = ['g']
+                if hit:
+                    # the DIAGNOSE has been executed in place of the SVC 10:
+                    # the code goes back first, and the PSW onto the SVC
+                    snap_send(herc, f"v {SNAP_BREAK}={SNAP['orig']}")
+                    SNAP['restored'] = True
+                    resume = [f'psw ia={SNAP_BREAK}', 'g']
+            else:
+                hit = ia == SNAP_BREAK and m.group(2) == '0A0A'
+                resume = ['start']
+            if not (SNAP['armed'] and hit and regs.get('00') == SNAP_R0):
                 SNAP['other'] += 1
-                snap_send(herc, 'start')
+                snap_send(herc, *resume)
                 continue
             t0 = time.time()
             snap_send(herc, f'v {SNAP_LOW}', *(f'v {r}' for r in SNAP_RANGES),
-                      f'* SNAPEND {n}', 'start')
+                      f'* SNAPEND {n}', *resume)
             end = f'* SNAPEND {n}\n'
             while end not in buf:
                 more()
@@ -411,32 +437,98 @@ def snap_watch(herc, logfile):
                 del SNAPS[SNAP_FIRST]
 
 
-def snap_arm(herc):
-    SNAP.update(run=True, armed=True)
+def snap_code(herc):
+    """The four bytes at SNAP_BREAK as Hercules displays them, and how it
+    translated the address: (None, None) without an answer."""
+    since = os.path.getsize(LOGFILE)
+    snap_send(herc, f'v {SNAP_BREAK}.4')
+    shown = re.compile(r'HHC02291I R:[0-9A-F]+ +K:[0-9A-F]{2} +\(([a-z ]+)\)'
+                       r'[^\n]*\n[^\n]*HHC02291I V:00' + SNAP_BREAK +
+                       r'  ([0-9A-F]{8}) ')
+    start = time.time()
+    while time.time() - start < 5:
+        with open(LOGFILE, 'rb') as f:
+            f.seek(since)
+            m = shown.search(f.read().decode('latin-1'))
+        if m:
+            return m.group(2), m.group(1)
+        time.sleep(0.1)
+    return None, None
+
+
+def snap_trap(herc):
+    """Put the DIAGNOSE in, with the CPU stopped: display and alter then
+    see one and the same translation, and it has to be a virtual one (with
+    DAT off the alter would go to real storage)."""
+    seen = None
+    for _ in range(20):
+        snap_send(herc, 'stop')
+        time.sleep(0.3)
+        seen = snap_code(herc)
+        if seen[1] == 'primary' and seen[0] and seen[0].startswith('0A0A'):
+            SNAP['orig'] = seen[0]
+            # the break range without the breakpoint: on, and off again
+            snap_send(herc, f'b {TRAP_NEXT}', 'b-',
+                      f'v {SNAP_BREAK}={TRAP_INST}')
+            now = snap_code(herc)
+            if now != (TRAP_INST, 'primary'):
+                snap_send(herc, f"v {SNAP_BREAK}={SNAP['orig']}", 'start')
+                fail(herc, f'variant T: {now} at {SNAP_BREAK} after the alter')
+            snap_send(herc, 'start')
+            return
+        snap_send(herc, 'start')
+        time.sleep(0.5)
+    fail(herc, f'variant T: {seen} at {SNAP_BREAK}, not the SVC 10')
+
+
+def snap_arm(herc, mode='S'):
+    SNAP.update(run=True, armed=True, mode=mode, restored=False)
     SNAP['thread'] = threading.Thread(target=snap_watch, args=(herc, LOGFILE),
                                       daemon=True)
     SNAP['thread'].start()
     time.sleep(1)
-    snap_send(herc, f'b {SNAP_BREAK}')
+    if mode == 'T':
+        snap_trap(herc)
+        log(f"  variant T: {TRAP_INST} at {SNAP_BREAK} in place of "
+            f"{SNAP['orig']}, break range {TRAP_NEXT}")
+    else:
+        snap_send(herc, f'b {SNAP_BREAK}')
+        log(f'  variant S: instruction breakpoint at {SNAP_BREAK}')
     time.sleep(1)
-    log(f'  variant S: instruction breakpoint at {SNAP_BREAK}')
 
 
 def snap_disarm(herc):
     """Breakpoint off; the watcher stays for a stop that is under way."""
     if not SNAP['run']:
         return
-    SNAP['armed'] = False
-    snap_send(herc, 'b-')
-    time.sleep(3)
-    SNAP['run'] = False
-    SNAP['thread'].join(10)
-    snap_send(herc, 'start')    # no-op (HHC00816W) unless a stop slipped through
-    time.sleep(1)
+    trap = SNAP['mode'] == 'T'
+    if trap:
+        # a stop that is under way is still answered by the watcher; the
+        # code goes back in any case (the same bytes again after a stop)
+        time.sleep(3)
+        SNAP['armed'] = False
+        if SNAP['orig']:
+            snap_send(herc, f"v {SNAP_BREAK}={SNAP['orig']}")
+        time.sleep(1)
+        SNAP['run'] = False
+        SNAP['thread'].join(10)
+        code = snap_code(herc)[0]
+        log(f"  variant T: {code} at {SNAP_BREAK} "
+            f"({'restored' if code == SNAP['orig'] else 'NOT RESTORED'}; "
+            f"{'by the stop' if SNAP['restored'] else 'no stop'})")
+    else:
+        SNAP['armed'] = False
+        snap_send(herc, 'b-')
+        time.sleep(3)
+        SNAP['run'] = False
+        SNAP['thread'].join(10)
+        snap_send(herc, 'start')    # no-op (HHC00816W) unless a stop slipped through
+        time.sleep(1)
     line = re.compile(r'HHC02291I V:([0-9A-F]{8})  '
                       r'([0-9A-F]{8}(?: [0-9A-F]{8}){0,3})  ')
     miss = re.compile(r'HHC02329E V:([0-9A-F]{8}) ')
-    log(f"  DIAG SNAP: {SNAP['stops']} stops at {SNAP_BREAK}, {SNAP['taken']} "
+    log(f"  DIAG SNAP: {SNAP['stops']} stops at "
+        f"{TRAP_NEXT if trap else SNAP_BREAK}, {SNAP['taken']} "
         f"with R0={SNAP_R0} displayed, {SNAP['other']} others; "
         f"{len(SNAPS)} kept")
     for s in SNAPS:
@@ -691,9 +783,9 @@ def read_load_modules(herc, name, modules):
     # private area and AMBLIST's variable GETMAIN takes all of it (VIRT 9280K
     # + SYS 240K = 9520K), so subpool 229/230 cannot get one more page.
     region = '4096K' if S40D_VARIANT == 'R' else '0M'
-    snap = S40D_VARIANT == 'S' and name == 'RAKFOLD'
+    snap = S40D_VARIANT in ('S', 'T') and name == 'RAKFOLD'
     if snap:
-        snap_arm(herc)
+        snap_arm(herc, S40D_VARIANT)
     jcl = f"{jobcard(name, 'AMBLIST', region=region)}\n{steps}"
     try:
         offset = os.path.getsize(PRINTER)
@@ -706,7 +798,7 @@ def read_load_modules(herc, name, modules):
         taken = SNAP['taken']
         snap_disarm(herc)
         if not taken:
-            fail(herc, f'variant S: no stop at {SNAP_BREAK} with R0={SNAP_R0}')
+            fail(herc, f'variant {S40D_VARIANT}: no stop with R0={SNAP_R0}')
     end = '*END OF LOAD MODULE LISTING'
     text = ''
     start = time.time()

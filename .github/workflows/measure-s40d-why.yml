@@ -5,6 +5,11 @@ name: Measure S40D amd64/arm64 (#48)
 # was missing is missing on arm64 only.
 #   A  unchanged, REGION=0M, on both architectures: how often the S40D, and
 #      what IEF374I says about the AMBLIST steps (VIRT and SYS)
+#   S  an instruction breakpoint on the SVC 10 of CLOSE that fails, storage
+#      displayed at every stop: all 48 builds alike and none failed, the
+#      armed breakpoint slows the guest and removes the variation
+#   T  the same display without the breakpoint: the SVC 10 is replaced by
+#      DIAGNOSE F04 until it is reached once, so the job runs at full speed
 # Every build prints the console and RAKFOLD's output; a failing one also
 # EREP and an AMDPRDMP FORMAT of the dump.
 
@@ -29,7 +34,7 @@ jobs:
         run: |
           uname -m; nproc; grep -m1 'model name' /proc/cpuinfo || true
           docker buildx build --progress plain \
-            --build-arg S40D_VARIANT=S \
+            --build-arg S40D_VARIANT=T \
             -f mvsce/Dockerfile mvsce 2>&1 | tee build.log
           exit ${PIPESTATUS[0]}
       - uses: actions/upload-artifact@v6
