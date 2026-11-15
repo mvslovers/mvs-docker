@@ -87,10 +87,12 @@ import socket
 import string
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 import zipfile
+import zlib
 
 EBCDIC_PORT = 3506
 ASCII_PORT = 3505
@@ -321,7 +323,7 @@ def diag_job(herc, name, jcl, timeout=600, max_lines=20000):
         time.sleep(30)
     log(f'  DIAG {name}: {"done" if done else "TIMEOUT, cancelled"}; console:')
     for l in read_log()[since:].splitlines():
-        if not re.match(r'^\d\d:\d\d:\d\d HHC0(1040|1206)I', l):
+        if not re.match(r'^\d\d:\d\d:\d\d HHC0(1040|1206|2291)I', l):
             print(f'    | {l}', flush=True)
     time.sleep(5)
     try:
@@ -337,9 +339,131 @@ def diag_job(herc, name, jcl, timeout=600, max_lines=20000):
         log(f'  DIAG {name}: {len(lines) - max_lines} more lines not shown')
 
 
+# Variant S: what the private area looks like at the GETMAIN that fails.
+#
+# The SVC 10 at D0A040 is the one of the CLOSE module that asks for 72 bytes
+# of subpool 230 (R0 = E6000048) and ends S80A in a failing build. Hercules
+# stops the CPU there (instruction breakpoint), the top 320K of the private
+# area are displayed into the log, and the CPU is started again. That is done
+# in passing builds as well, which is the point: the same picture of both.
+SNAP_BREAK = 'D0A040'
+SNAP_R0 = 'E6000048'
+SNAP_LOW = '200-24F'            # PSA: TCB and ASCB pointers
+SNAP_RANGES = ('990000-99FFFF', '9A0000-9AFFFF', '9B0000-9BFFFF', '9C0000-9CFFFF',
+               '9D0000-9DFFFF')
+SNAP_FIRST, SNAP_LAST = 6, 34   # snapshots kept: the first and the last ones
+SNAPS = []
+SNAP = {'run': False, 'armed': False, 'stops': 0, 'taken': 0, 'other': 0,
+        'thread': None}
+
+
+def snap_send(herc, *lines):
+    herc.stdin.write(''.join(l + '\n' for l in lines).encode())
+    herc.stdin.flush()
+
+
+def snap_watch(herc, logfile):
+    """Answer every stop at the breakpoint: display storage if it is the
+    GETMAIN in question, and start the CPU again in any case."""
+    stop = re.compile(r'HHC02324I PSW=([0-9A-F]{10}' + SNAP_BREAK +
+                      r') INST=([0-9A-F]{4})')
+    reg = re.compile(r'GR(\d\d)=([0-9A-F]{8})')
+    buf = ''
+    with open(logfile, 'rb') as f:
+        f.seek(0, 2)
+
+        def more():
+            nonlocal buf
+            chunk = f.read()
+            if chunk:
+                buf += chunk.decode('latin-1')
+            else:
+                time.sleep(0.02)
+
+        while SNAP['run']:
+            m = stop.search(buf)
+            if not m:
+                buf = buf[-200:]
+                more()
+                continue
+            while buf.count('HHC02269I', m.end()) < 4 or not buf.endswith('\n'):
+                more()
+            regs = dict(reg.findall(buf[m.end():]))
+            buf = ''
+            SNAP['stops'] += 1
+            n = SNAP['stops']
+            if not (SNAP['armed'] and m.group(2) == '0A0A'
+                    and regs.get('00') == SNAP_R0):
+                SNAP['other'] += 1
+                snap_send(herc, 'start')
+                continue
+            t0 = time.time()
+            snap_send(herc, f'v {SNAP_LOW}', *(f'v {r}' for r in SNAP_RANGES),
+                      f'* SNAPEND {n}', 'start')
+            end = f'* SNAPEND {n}\n'
+            while end not in buf:
+                more()
+            text, buf = buf.split(end, 1)
+            SNAPS.append({'n': n, 'psw': m.group(1), 'regs': regs,
+                          'text': text, 'secs': time.time() - t0})
+            SNAP['taken'] += 1
+            if len(SNAPS) > SNAP_FIRST + SNAP_LAST:
+                del SNAPS[SNAP_FIRST]
+
+
+def snap_arm(herc):
+    SNAP.update(run=True, armed=True)
+    SNAP['thread'] = threading.Thread(target=snap_watch, args=(herc, LOGFILE),
+                                      daemon=True)
+    SNAP['thread'].start()
+    time.sleep(1)
+    snap_send(herc, f'b {SNAP_BREAK}')
+    time.sleep(1)
+    log(f'  variant S: instruction breakpoint at {SNAP_BREAK}')
+
+
+def snap_disarm(herc):
+    """Breakpoint off; the watcher stays for a stop that is under way."""
+    if not SNAP['run']:
+        return
+    SNAP['armed'] = False
+    snap_send(herc, 'b-')
+    time.sleep(3)
+    SNAP['run'] = False
+    SNAP['thread'].join(10)
+    snap_send(herc, 'start')    # no-op (HHC00816W) unless a stop slipped through
+    time.sleep(1)
+    line = re.compile(r'HHC02291I V:([0-9A-F]{8})  '
+                      r'([0-9A-F]{8}(?: [0-9A-F]{8}){0,3})  ')
+    miss = re.compile(r'HHC02329E V:([0-9A-F]{8}) ')
+    log(f"  DIAG SNAP: {SNAP['stops']} stops at {SNAP_BREAK}, {SNAP['taken']} "
+        f"with R0={SNAP_R0} displayed, {SNAP['other']} others; "
+        f"{len(SNAPS)} kept")
+    for s in SNAPS:
+        got = {int(a, 16): bytes.fromhex(h.replace(' ', ''))
+               for a, h in line.findall(s['text'])}
+        missing = sorted({int(a, 16) & ~0xFFF for a in miss.findall(s['text'])})
+        low = b''.join(got.get(a, b'\xEE' * 16) for a in range(0x200, 0x250, 16))
+        lo = int(SNAP_RANGES[0].split('-')[0], 16)
+        hi = int(SNAP_RANGES[-1].split('-')[1], 16) + 1
+        blob = b''.join(got.get(a, b'\x00' * 16).ljust(16, b'\x00')
+                        for a in range(lo, hi, 16))
+        present = sum(1 for a in range(lo, hi, 4096) if a in got)
+        regs = ' '.join(s['regs'].get(f'{i:02d}', '?' * 8) for i in range(16))
+        log(f"  DIAG SNAP {s['n']}: PSW={s['psw']} GR={regs}")
+        log(f"  DIAG SNAP {s['n']}: PSA200={low.hex().upper()}")
+        log(f"  DIAG SNAP {s['n']}: {lo:06X}-{hi - 1:06X}, {present} pages "
+            f"displayed, {len(missing)} not translatable "
+            f"{[f'{a:06X}' for a in missing]}, {s['secs']:.2f}s")
+        z = base64.b64encode(zlib.compress(blob, 9)).decode()
+        for i in range(0, len(z), 150):
+            print(f"    Z{s['n']:03d} {z[i:i + 150]}", flush=True)
+    SNAPS.clear()
+
+
 def print_console(what):
     lines = [l for l in read_log().splitlines()
-             if not re.match(r'^\d\d:\d\d:\d\d HHC0(1040|1206)I', l)]
+             if not re.match(r'^\d\d:\d\d:\d\d HHC0(1040|1206|2291)I', l)]
     log(f'  DIAG: {what}, {len(lines)} lines:')
     for l in lines:
         print(f'    | {l}', flush=True)
@@ -356,10 +480,17 @@ def diagnose(herc):
     diag_job(herc, 'DIAGEREP', EREP_JCL.format(card=jobcard('DIAGEREP', 'EREP')))
     diag_job(herc, 'DIAGDUMP', prdmp_jcl('DIAGDUMP', ' CPUDATA\n SUMMARY\n FORMAT'),
              timeout=900, max_lines=40000)
+    diag_job(herc, 'DIAGSTOR', prdmp_jcl('DIAGSTOR',
+                                         ' PRINT STORAGE=(9A0000,9DFFFF)'),
+             timeout=900, max_lines=40000)
 
 
 def fail(herc, msg):
     log(f'ERROR: {msg}')
+    try:
+        snap_disarm(herc)
+    except Exception as e:
+        log(f'  SNAP failed: {e}')
     try:
         diagnose(herc)
     except Exception as e:
@@ -560,13 +691,22 @@ def read_load_modules(herc, name, modules):
     # private area and AMBLIST's variable GETMAIN takes all of it (VIRT 9280K
     # + SYS 240K = 9520K), so subpool 229/230 cannot get one more page.
     region = '4096K' if S40D_VARIANT == 'R' else '0M'
+    snap = S40D_VARIANT == 'S' and name == 'RAKFOLD'
+    if snap:
+        snap_arm(herc)
     jcl = f"{jobcard(name, 'AMBLIST', region=region)}\n{steps}"
     try:
         offset = os.path.getsize(PRINTER)
     except FileNotFoundError:
         offset = 0
     run_job(herc, name, lambda: submit_ascii(jcl),
-            [f'AMB{i}' for i in range(1, len(modules) + 1)])
+            [f'AMB{i}' for i in range(1, len(modules) + 1)],
+            timeout=900 if snap else JOB_TIMEOUT)
+    if snap:
+        taken = SNAP['taken']
+        snap_disarm(herc)
+        if not taken:
+            fail(herc, f'variant S: no stop at {SNAP_BREAK} with R0={SNAP_R0}')
     end = '*END OF LOAD MODULE LISTING'
     text = ''
     start = time.time()

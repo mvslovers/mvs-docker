@@ -29,7 +29,7 @@ jobs:
         run: |
           uname -m; nproc; grep -m1 'model name' /proc/cpuinfo || true
           docker buildx build --progress plain \
-            --build-arg S40D_VARIANT=A \
+            --build-arg S40D_VARIANT=S \
             -f mvsce/Dockerfile mvsce 2>&1 | tee build.log
           exit ${PIPESTATUS[0]}
       - uses: actions/upload-artifact@v6
